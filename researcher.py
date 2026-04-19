@@ -126,3 +126,31 @@ class PolyResearcher:
         digest = self._summarize_research(raw_knowledge, query)
         logging.info(">> Research Digest Generated.")
         return digest
+
+    def gather_social_sentiment(self, query):
+        """利用搜尋引擎的 site:reddit.com 語法，免 API 捕捉社群論壇的最新討論串"""
+        logging.info(f"Scraping social forums (Reddit) for: {query}")
+        
+        # 取題目前幾個關鍵字進行模糊搜尋
+        core_keywords = " ".join(query.replace('?', '').replace(',', '').split()[:5])
+        social_q = f"{core_keywords} site:reddit.com"
+        
+        try:
+            import time
+            results = self.ddgs.text(social_q, max_results=5)
+            social_snippets = []
+            if results:
+                for r in list(results):
+                    title = r.get('title', '')
+                    body = r.get('body', '')
+                    social_snippets.append(f"[Reddit Thread] Title: {title} | Snippet: {body}")
+            
+            time.sleep(2) # 友善延遲
+            
+            if not social_snippets:
+                return "No significant trending discussions found on Reddit regarding this topic."
+                
+            return "\n".join(social_snippets)
+        except Exception as e:
+            logging.error(f"Social sentiment scrape failed: {e}")
+            return "Failed to retrieve social data due to rate limits."
