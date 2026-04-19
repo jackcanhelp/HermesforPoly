@@ -20,10 +20,11 @@ def filter_potential_markets(df):
     now = datetime.now(timezone.utc)
     for _, row in df.iterrows():
         # 濾波器：只選 14 天內會結算的短期事件，加速 Feedback Loop 和賺錢效率
+        # 額外防呆：如果 endDate 已經在過去 (days_to_end < 0)，代表該盤口其實已經打完只是 Oracle 還沒官方結算，我們絕對不碰這種「已經發生」的歷史局！
         end_date = row.get('endDate')
         if pd.notna(end_date):
             days_to_end = (end_date - now).days
-            if days_to_end > 14:
+            if days_to_end > 14 or days_to_end < 0:
                 continue
 
         outcomes = row.get('outcomes', [])
