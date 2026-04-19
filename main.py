@@ -16,6 +16,13 @@ def filter_potential_markets(df):
     """
     potential_markets = []
     for _, row in df.iterrows():
+        outcomes = row.get('outcomes', [])
+        # 嚴格防呆檢查：只允許標準的二元 (Yes/No) 市場，因多選題 (如各國總統候選人) 的 EV 與 Kelly 計算方式完全不同
+        if not isinstance(outcomes, list) or len(outcomes) != 2:
+            continue
+        if "Yes" not in outcomes or "No" not in outcomes:
+            continue
+            
         prices = row['prices'] if isinstance(row['prices'], list) else []
         is_interesting = False
         
