@@ -111,13 +111,13 @@ class PolyResearcher:
         sub_queries = self._generate_sub_queries(query)
         logging.info(f"Sub-Queries: {sub_queries}")
         
-        # 2. 多線程同時爬網頁 (平行處理節省時間)
+        import time
+        # 2. 循序爬網頁 (放棄多線程以免觸發 DuckDuckGo 的 403 防爬蟲封鎖機制)
         raw_knowledge = ""
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            future_to_query = {executor.submit(self._scrape_duckduckgo, q): q for q in sub_queries}
-            for future in concurrent.futures.as_completed(future_to_query):
-                res = future.result()
-                raw_knowledge += res + "\n"
+        for q in sub_queries:
+            res = self._scrape_duckduckgo(q)
+            raw_knowledge += res + "\n"
+            time.sleep(2) # 友善爬蟲暫停
                 
         if not raw_knowledge.strip():
             return "No real-time context found online."

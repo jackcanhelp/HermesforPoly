@@ -82,6 +82,12 @@ def main():
         
         # Agent 分析
         print(">> Hermes is analyzing via Debate...")
+        
+        # 熔斷機制 (Circuit Breaker)：如果情報員真的被擋抓不到資料，一律拒絕讓大腦「腦補瞎猜」
+        if "No real-time context found" in context or not context.strip():
+            print(">> 🛑 [Circuit Breaker] 無法取得足夠情報，拒絕讓 AI 進行盲目臆測下單。")
+            continue
+            
         result = agent.analyze_event_debate(q, cat, context)
         
         if result:
