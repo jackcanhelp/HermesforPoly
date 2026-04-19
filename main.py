@@ -1,5 +1,7 @@
 import time
 import logging
+import pandas as pd
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from poly_scanner import fetch_active_markets
 from researcher import PolyResearcher
@@ -15,7 +17,15 @@ def filter_potential_markets(df):
     從資料集中過濾出流動性佳，且機率非極端的市場
     """
     potential_markets = []
+    now = datetime.now(timezone.utc)
     for _, row in df.iterrows():
+        # 濾波器：只選 14 天內會結算的短期事件，加速 Feedback Loop 和賺錢效率
+        end_date = row.get('endDate')
+        if pd.notna(end_date):
+            days_to_end = (end_date - now).days
+            if days_to_end > 14:
+                continue
+
         outcomes = row.get('outcomes', [])
         # 嚴格防呆檢查：只允許標準的二元 (Yes/No) 市場，因多選題 (如各國總統候選人) 的 EV 與 Kelly 計算方式完全不同
         if not isinstance(outcomes, list) or len(outcomes) != 2:

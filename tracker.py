@@ -27,15 +27,36 @@ class PaperTracker:
                 status TEXT,
                 context_at_time TEXT,
                 reasoning TEXT,
-                kelly_fraction REAL
+                kelly_fraction REAL,
+                trade_size REAL DEFAULT 0.0,
+                realized_pnl REAL DEFAULT 0.0
             )
         ''')
+        
+        # Portfolio table for Bankroll Tracking
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS portfolio (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                balance REAL
+            )
+        ''')
+        
+        # Initialize Bankroll if empty
+        cursor.execute("SELECT COUNT(*) FROM portfolio")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("INSERT INTO portfolio (timestamp, balance) VALUES (?, ?)", (datetime.now().isoformat(), 10000.0))
+            
         # 改良的 Migration (若有缺少欄位則嘗試補上)
         try: cursor.execute("ALTER TABLE paper_trades ADD COLUMN context_at_time TEXT")
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE paper_trades ADD COLUMN reasoning TEXT")
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE paper_trades ADD COLUMN kelly_fraction REAL DEFAULT 0.0")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE paper_trades ADD COLUMN trade_size REAL DEFAULT 0.0")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE paper_trades ADD COLUMN realized_pnl REAL DEFAULT 0.0")
         except sqlite3.OperationalError: pass
             
         cursor.execute('''
@@ -63,11 +84,6 @@ class PaperTracker:
             return []
 
     def evaluate_and_log(self, market_id, question, predicted_prob, prices, outcomes, context, reasoning, edge_threshold=0.05):
-        """
-        評估是否有足夠定價誤差 (Expected Value > threshold)，若有則寫入資料庫
-        prices: list of floats [Yes_price, No_price] 
-        outcomes: list of strings ['Yes', 'No']
-        """
         if not prices or len(prices) == 0:
             return
 
@@ -77,19 +93,11 @@ class PaperTracker:
                 yes_idx = i
                 break
         
-        # 如果找不到明確的 Yes 選項，預設取第一個
-        if yes_idx is None:
-            yes_idx = 0
+        if yes_idx is None: yes_idx = 0
 
         try:
             market_price = float(prices[yes_idx])
-            
-            # 計算期望值: 假設買入 1 股 Yes (成本為 market_price)，獲勝拿 1 元
-            # EV = (勝率 * 1) - 成本
             ev_yes = predicted_prob - market_price
-            
-            # 反之，若看跌 (買 No) 的期望值
-            # no_market_price = 1 - market_price (簡單假設) 或是實際 prices 的值
             ev_no = (1 - predicted_prob) - (1 - market_price)
             
             action = None
@@ -101,7 +109,6 @@ class PaperTracker:
                 action = "BUY YES"
                 ev = ev_yes
                 price_paid = market_price
-                # Kelly Criterion for binary options: f = (p - c) / (1 - c)
                 f = (predicted_prob - market_price) / (1 - market_price) if market_price < 1 else 0
                 
             elif ev_no > edge_threshold:
@@ -112,7 +119,6 @@ class PaperTracker:
                 c_no = 1 - market_price
                 f = (p_no - c_no) / (1 - c_no) if c_no < 1 else 0
                 
-            # 套用 Fractional Kelly (保守起見，只下註建議的四分之一) + 上限 15%
             fractional_kelly = min(max(f * 0.25, 0.0), 0.15)
                 
             if action:
@@ -127,24 +133,40 @@ class PaperTracker:
     def _log_trade(self, market_id, question, predicted_prob, market_price, action, ev, context, reasoning, kelly_fraction):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        
+        # Get Current Balance
+        cursor.execute("SELECT balance FROM portfolio ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        current_balance = float(row[0]) if row else 10000.0
+        
+        trade_size = current_balance * kelly_fraction
+        new_balance = current_balance - trade_size
+        
+        # Deduct from Portfolio
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("INSERT INTO portfolio (timestamp, balance) VALUES (?, ?)", (timestamp, new_balance))
+        
+        # Log Trade
         cursor.execute('''
-            INSERT INTO paper_trades (timestamp, market_id, question, predicted_prob, market_price, action, ev, status, context_at_time, reasoning, kelly_fraction)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (timestamp, str(market_id), question, predicted_prob, market_price, action, ev, "OPEN", context, reasoning, kelly_fraction))
+            INSERT INTO paper_trades (timestamp, market_id, question, predicted_prob, market_price, action, ev, status, context_at_time, reasoning, kelly_fraction, trade_size)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (timestamp, str(market_id), question, predicted_prob, market_price, action, ev, "OPEN", context, reasoning, kelly_fraction, trade_size))
+        
         conn.commit()
         conn.close()
         
         # 發送推播
         alert_msg = (
-            f"🎯 <b>Polymarket 機會 (Multi-Agent V2)</b>\n\n"
+            f"🎯 <b>Polymarket 機會 (Bankroll V4)</b>\n\n"
             f"<b>市場:</b> {question}\n"
-            f"<b>Agent 預測勝率:</b> {predicted_prob*100:.1f}%\n"
-            f"<b>市場價格:</b> ${market_price:.3f}\n"
+            f"<b>決策:</b> {action} @ ${market_price:.3f}\n"
+            f"<b>勝率預測:</b> {predicted_prob*100:.1f}%\n"
+            f"<b>理論EV:</b> {ev*100:.1f}%\n"
             f"-----------------------\n"
-            f"👉 <b>建議: {action}</b>\n"
-            f"📈 <b>期望值 (EV): {ev*100:.1f}%</b>\n"
-            f"💰 <b>防爆倉凱利部位: 總資金的 {kelly_fraction*100:.1f}%</b>"
+            f"💵 <b>虛擬本金庫扣款下注:</b>\n"
+            f"- 下注比例: {kelly_fraction*100:.1f}%\n"
+            f"- 下注金額: ${trade_size:.2f} USD\n"
+            f"- 扣款後餘額: ${new_balance:.2f} USD"
         )
         send_telegram_alert(alert_msg)
         
@@ -154,13 +176,12 @@ class PaperTracker:
         cursor.execute("SELECT COUNT(*) FROM paper_trades")
         count = cursor.fetchone()[0]
         
-        # 簡單 PnL 模擬如果都押 100 美元
-        cursor.execute("SELECT ev FROM paper_trades")
-        evs = cursor.fetchall()
-        total_ev = sum([x[0] * 100 for x in evs])
+        cursor.execute("SELECT balance FROM portfolio ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        balance = row[0] if row else 10000.0
         
         logging.info(f"Total simulated trades logged: {count}")
-        logging.info(f"Total Expected Profit (assuming $100 per trade): ${total_ev:.2f}")
+        logging.info(f"Current Virtual Bankroll: ${balance:.2f}")
         conn.close()
 
 if __name__ == "__main__":

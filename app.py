@@ -3,79 +3,102 @@ import sqlite3
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(page_title="Hermes Polymarket Dashboard", layout="wide")
+st.set_page_config(page_title="Hermes V4 | Real Bankroll", layout="wide")
 
-st.title("🏛️ Hermes Polymarket 預測儀表板")
-st.markdown("基於 **多代理人辯論系統 (V2)** 驅動的 Paper Trading 即時戰情室")
+st.title("🏛️ Hermes Polymarket 實盤演練室 (Bankroll V4)")
+st.markdown("啟動 **自動深度研究** x **資金水位模擬** 的真實戰場。")
 
-# 讀取 DB
 def load_data():
     conn = sqlite3.connect("paper_trading.db")
     try:
         trades_df = pd.read_sql_query("SELECT * FROM paper_trades", conn)
         lessons_df = pd.read_sql_query("SELECT * FROM lessons_learned", conn)
+        pf_df = pd.read_sql_query("SELECT * FROM portfolio", conn)
     except Exception:
         trades_df = pd.DataFrame()
         lessons_df = pd.DataFrame()
+        pf_df = pd.DataFrame()
     finally:
         conn.close()
-    return trades_df, lessons_df
+    return trades_df, lessons_df, pf_df
 
-trades_df, lessons_df = load_data()
+trades_df, lessons_df, pf_df = load_data()
 
-# 確保 V2 新增的欄位存在 (以免使用者還沒重啟主程式時看網頁會崩潰)
-if not trades_df.empty and 'kelly_fraction' not in trades_df.columns:
-    trades_df['kelly_fraction'] = 0.0
+# 防呆：確保新的欄位存在
+if not trades_df.empty:
+    for col in ['kelly_fraction', 'trade_size', 'realized_pnl']:
+        if col not in trades_df.columns:
+            trades_df[col] = 0.0
 
-if trades_df.empty:
-    st.info("目前尚無任何交易紀錄。請執行 `main.py` 開始收集數據。")
+if pf_df.empty:
+    st.info("目前尚無建立資金庫。請重啟 `main.py` 開始收集數據與建倉。")
 else:
-    # KPI
+    # 頂部 KPI 面板
     col1, col2, col3, col4 = st.columns(4)
-    total_trades = len(trades_df)
-    open_trades = len(trades_df[trades_df['status'] == 'OPEN'])
-    closed_trades = total_trades - open_trades
-    avg_ev = trades_df['ev'].mean() * 100 if total_trades > 0 else 0
     
-    col1.metric("總監控發現訊號數", total_trades)
-    col2.metric("活躍的未平倉交易", open_trades)
-    col3.metric("已結算的交易數", closed_trades)
-    col4.metric("平均期望值 (EV) 優勢", f"{avg_ev:.2f}%")
+    current_balance = pf_df.iloc[-1]['balance']
+    net_profit = current_balance - 10000.0
+    
+    open_trades = len(trades_df[trades_df['status'] == 'OPEN']) if not trades_df.empty else 0
+    closed_trades = trades_df[trades_df['status'] == 'CLOSED'] if not trades_df.empty else pd.DataFrame()
+    num_closed = len(closed_trades)
+    
+    win_rate = 0.0
+    if num_closed > 0:
+        win_trades = closed_trades[closed_trades['realized_pnl'] > 0]
+        win_rate = (len(win_trades) / num_closed) * 100
+    
+    col1.metric("虛擬資金餘額 (Bankroll)", f"${current_balance:,.2f} USD", f"{net_profit:,.2f} USD")
+    col2.metric("真實開獎勝率 (Win Rate)", f"{win_rate:.1f}%", f"已開獎 {num_closed} 局")
+    col3.metric("在途風險部位 (Open Bets)", f"{open_trades} 筆合約")
+    
+    # 計算在途資金
+    if not trades_df.empty:
+        open_risk = trades_df[trades_df['status'] == 'OPEN']['trade_size'].sum()
+    else:
+        open_risk = 0.0
+    col4.metric("已占用保證金 (Locked)", f"${open_risk:,.2f} USD")
     
     st.divider()
 
-    # 圖表：期望值累計捕捉量
-    st.subheader("📈 總期望值累積曲線")
-    if total_trades > 0:
-        trades_df['Cumulative EV'] = trades_df['ev'].cumsum()
-        fig = px.line(trades_df, x=trades_df.index, y='Cumulative EV', markers=True, title="Cumulative Edge Captured (單位: EV)")
+    # 圖表：真實資金成長線
+    st.subheader("📈 真實本金水位曲線 (Bankroll Over Time)")
+    if len(pf_df) > 1:
+        fig = px.line(pf_df, x='timestamp', y='balance', markers=True, title="Virtual USD Bankroll Progression")
+        fig.add_hline(y=10000, line_dash="dash", line_color="gray", annotation_text="Initial $10,000")
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.write("目前尚無足夠的交易流動，尚未產生曲線。")
 
-    # 兩大表格展示
     st.divider()
     col_left, col_right = st.columns(2)
     
     with col_left:
-        st.subheader("🛒 最新活躍預測 (Open Trades)")
-        open_df = trades_df[trades_df['status'] == 'OPEN'][['timestamp', 'question', 'action', 'ev', 'kelly_fraction']].sort_values(by='timestamp', ascending=False)
-        st.dataframe(open_df, use_container_width=True)
-        
-    with col_right:
-        st.subheader("🧠 大腦反思紀錄庫 (Lessons Learned)")
-        if not lessons_df.empty:
-            lessons_show = lessons_df[['timestamp', 'lesson']].sort_values(by='timestamp', ascending=False)
-            st.dataframe(lessons_show, use_container_width=True)
+        st.subheader("🛒 在途未平倉 (Open Trades)")
+        if not trades_df.empty:
+            open_df = trades_df[trades_df['status'] == 'OPEN'][['timestamp', 'question', 'action', 'market_price', 'trade_size']].sort_values(by='timestamp', ascending=False)
+            st.dataframe(open_df, use_container_width=True)
         else:
-            st.write("目前尚無結算單的反思紀錄。")
+            st.write("目前空手中。")
+            
+    with col_right:
+        st.subheader("💰 已結算戰果 (Closed PnL)")
+        if not closed_trades.empty:
+            closed_show = closed_trades[['question', 'action', 'trade_size', 'realized_pnl']].sort_values(by='realized_pnl', ascending=False)
+            st.dataframe(closed_show, use_container_width=True)
+        else:
+            st.write("尚未有任何 14 天內的短線事件滿足結算條件。")
 
-    # 隱藏的推論過程檢視 (細節)
+    # 隱藏的推論過程檢視
     st.divider()
-    st.subheader("🔍 當下推論邏輯檢視 (避免 Look-Ahead Bias)")
-    selected_trade = st.selectbox("選擇要檢視的事件", trades_df['question'].unique())
-    if selected_trade:
-        trade_details = trades_df[trades_df['question'] == selected_trade].iloc[0]
-        st.markdown(f"**建議行動:** {trade_details['action']} | **預估勝率:** {trade_details['predicted_prob']*100:.1f}% | **防爆倉下注:** 總資產 {trade_details.get('kelly_fraction', 0)*100:.1f}%")
-        st.write("--- 當下掌握的情報 (Context) ---")
-        st.text(trade_details.get('context_at_time', 'N/A'))
-        st.write("--- 辯論最終觀點 (Reasoning) ---")
-        st.markdown(trade_details.get('reasoning', 'N/A'))
+    st.subheader("🔍 大腦深度研究報告 (Auto-Research Evidence)")
+    if not trades_df.empty:
+        selected_trade = st.selectbox("選擇要檢視的交易邏輯", trades_df['question'].unique())
+        if selected_trade:
+            trade_details = trades_df[trades_df['question'] == selected_trade].iloc[-1]
+            st.markdown(f"**建議行動:** {trade_details['action']} | **下注 USD:** ${trade_details.get('trade_size', 0):.2f}")
+            with st.expander("詳細調查報告與法官判決"):
+                st.write("--- 🧐 情報員匯總的萬字爬蟲總結 (Digest) ---")
+                st.text(trade_details.get('context_at_time', 'N/A'))
+                st.write("--- 👨‍⚖️ 法官最終交叉辯論 (Reasoning) ---")
+                st.markdown(trade_details.get('reasoning', 'N/A'))

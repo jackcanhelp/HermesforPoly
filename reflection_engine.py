@@ -49,17 +49,36 @@ def run_reflection_cycle():
     conn = sqlite3.connect("paper_trading.db")
     cursor = conn.cursor()
     
-    cursor.execute("SELECT id, market_id, question, predicted_prob, action, context_at_time, reasoning FROM paper_trades WHERE status = 'OPEN'")
+    cursor.execute("SELECT id, market_id, question, predicted_prob, action, context_at_time, reasoning, trade_size, market_price FROM paper_trades WHERE status = 'OPEN'")
     open_trades = cursor.fetchall()
     
     agent = HermesAgent(model_name="gemma", api_url="http://127.0.0.1:11434/api/chat")
     
     for trade in open_trades:
-        trade_id, m_id, q, prob, action, ctx, reason = trade
+        trade_id, m_id, q, prob, action, ctx, reason, trade_size, price_paid = trade
         
         is_closed, winner = check_market_resolution(m_id)
         if is_closed and winner is not None:
             logging.info(f"Market [{q}] resolved! Winner: {winner}")
+            
+            # 結算損益 (Realized PnL & Payout)
+            payout = 0
+            if action == 'BUY YES' and winner.lower() == 'yes':
+                payout = (trade_size / price_paid) * 1.0
+            elif action == 'BUY NO' and winner.lower() == 'no':
+                payout = (trade_size / price_paid) * 1.0
+            
+            realized_pnl = payout - trade_size
+            
+            # 將獎金發派回資金池
+            if payout > 0:
+                cursor.execute("SELECT balance FROM portfolio ORDER BY id DESC LIMIT 1")
+                row = cursor.fetchone()
+                current_balance = float(row[0]) if row else 10000.0
+                new_balance = current_balance + payout
+                from datetime import datetime
+                cursor.execute("INSERT INTO portfolio (timestamp, balance) VALUES (?, ?)", (datetime.now().isoformat(), new_balance))
+            
             # 判斷是否預測正確
             actual_yes = 1 if winner.lower() == 'yes' else 0
             
@@ -88,9 +107,9 @@ def run_reflection_cycle():
                 response = requests.post(agent.api_url, json=payload, timeout=60)
                 lesson = response.json().get("message", {}).get("content", "").strip()
                 
-                # 儲存 Reflection
+                # 儲存 Reflection 與真實損益
                 cursor.execute("INSERT INTO lessons_learned (timestamp, category, lesson) VALUES (datetime('now'), 'Prediction', ?)", (lesson,))
-                cursor.execute("UPDATE paper_trades SET status = 'CLOSED' WHERE id = ?", (trade_id,))
+                cursor.execute("UPDATE paper_trades SET status = 'CLOSED', realized_pnl = ? WHERE id = ?", (realized_pnl, trade_id))
                 conn.commit()
                 logging.info(f"Lesson extracted and saved: {lesson[:50]}...")
             except Exception as e:

@@ -51,12 +51,17 @@ def fetch_active_markets(limit=50):
                     'liquidity': liquidity,
                     'outcomes': outcomes,
                     'prices': prices,
+                    'endDate': m.get('endDate', ''),
                     'category': m.get('category', 'Unknown')
                 })
             except Exception as e:
                 print(f"Error parsing market: {e}")
                 
         df = pd.DataFrame(markets)
+        # Parse dates
+        if not df.empty and 'endDate' in df.columns:
+            df['endDate'] = pd.to_datetime(df['endDate'], format='mixed', utc=True)
+            
         return df
     else:
         print(f"Error fetching data: {response.status_code}")
