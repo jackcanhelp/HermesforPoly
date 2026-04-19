@@ -1,7 +1,7 @@
 import requests
 import json
 import logging
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from bs4 import BeautifulSoup
 from datetime import datetime
 import concurrent.futures
