@@ -2,7 +2,7 @@ import requests
 import json
 import logging
 import sqlite3
-import logging
+import re
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -28,7 +28,7 @@ class HermesAgent:
         except Exception:
             return "No past lessons available yet."
 
-    def build_judge_prompt(self, question, category, context, bull_arg, bear_arg):
+    def build_judge_prompt(self, question, category, context, bull_arg, bear_arg, sentiment_report):
         past_lessons = self.get_lessons()
         
         system_prompt = (
@@ -43,16 +43,19 @@ class HermesAgent:
             "'probability' (a float between 0.00 and 1.00)."
         )
         
-        user_prompt = (
-            f"Category: {category}\nEvent Question: {question}\n\n"
-            f"[Context]:\n{context}\n\n"
-            f"--- DEBATE --- \n"
-            f"[BULL ARGUMENT]:\n{bull_arg}\n\n"
-            f"[BEAR ARGUMENT]:\n{bear_arg}\n\n"
-            f"Evaluate the true probability of this event resolving as Yes based on all facts and arguments provided."
+        judge_prompt = (
+            f"Question: {question}\n"
+            f"Market Category: {category}\n\n"
+            f"News/Facts Context:\n{context}\n\n"
+            f"Reddit/Social Crowd Sentiment:\n{sentiment_report}\n\n"
+            f"Past Lessons Learned (AVOID THESE MISTAKES):\n{past_lessons}\n\n"
+            f"Bull Agent (Argues FOR Yes):\n{bull_arg}\n\n"
+            f"Bear Agent (Argues AGAINST Yes):\n{bear_arg}\n\n"
+            f"As the final Judge, synthesize fact-based contexts and social momentum. Beware of getting swayed by pure social hype if facts contradict it, but DO leverage social momentum (FOMO/FUD) if the event is popularity-based.\n"
+            f"End your judgment with the Exact format: 'PROBABILITY: X%'"
         )
         
-        return system_prompt, user_prompt
+        return system_prompt, judge_prompt
 
     def _call_llm(self, sys_p, usr_p, json_mode=False):
         payload = {
@@ -75,7 +78,42 @@ class HermesAgent:
             logging.error(f"Error calling LLM: {e}")
             return None
 
-    def analyze_event_debate(self, question, category="Unknown", context="No recent context."):
+    def analyze_social_sentiment(self, question, social_context):
+        """讓群眾心理學特工 (Sentiment Analyst) 評估社交網路的情緒動能"""
+        logging.info("Sentiment Analyst is evaluating the crowd hype...")
+        
+        sys_prompt = (
+            "You are a Quantitative Sentiment Analyst for a prediction market trading firm. "
+            "Your job is to read Reddit or Twitter threads regarding a specific event and gauge the crowd's momentum and emotion. "
+            "Classify the sentiment into one of the following exact tags: [EXTREME FOMO], [MILDLY POSITIVE], [NEUTRAL/MIXED], [MILDLY NEGATIVE], [EXTREME FUD/PANIC]. "
+            "Provide a highly concise 2-sentence summary of what the crowd believes, and conclude with your exact sentiment tag."
+        )
+        
+        prompt = (
+            f"Event/Market Question: {question}\n\n"
+            f"Raw Reddit Threads:\n{social_context}\n\n"
+            f"What is the crowd's momentum?"
+        )
+        
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            "stream": False,
+            "options": {"temperature": 0.3}
+        }
+        
+        try:
+            response = requests.post(self.api_url, json=payload, timeout=60)
+            result_str = response.json().get('message', {}).get('content', '').strip()
+            return result_str
+        except Exception as e:
+            logging.error(f"Sentiment analysis failed: {e}")
+            return "[NEUTRAL/MIXED] Failed to analyze sentiment."
+
+    def analyze_event_debate(self, question, category, context, sentiment_report=""):
         logging.info(f"Initiating Debate for: {question}")
         
         # 1. Bull Agent
@@ -92,7 +130,7 @@ class HermesAgent:
         
         # 3. Judge Agent
         logging.info(">> Judge Agent is evaluating the debate...")
-        sys_p, usr_p = self.build_judge_prompt(question, category, context, bull_arg, bear_arg)
+        sys_p, usr_p = self.build_judge_prompt(question, category, context, bull_arg, bear_arg, sentiment_report)
         
         content = self._call_llm(sys_p, usr_p, json_mode=True)
         if not content: return None

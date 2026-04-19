@@ -76,26 +76,27 @@ def main():
         
         print(f"\n{'='*50}\n[Event {idx+1}] {q}")
         
-        # 抓取情報
+        # 情報搜集
+        print(">> Auto-Researcher is gathering news...")
         context = researcher.gather_intelligence(q)
-        print(">> Network Context Gathered.")
         
-        # Agent 分析
-        print(">> Hermes is analyzing via Debate...")
+        # 社群情緒雷達 (Phase 5)
+        print(">> Social Sentinel is analyzing Reddit momentum...")
+        social_context = researcher.gather_social_sentiment(q)
+        sentiment_report = agent.analyze_social_sentiment(q, social_context)
         
         # 熔斷機制 (Circuit Breaker)：如果情報員真的被擋抓不到資料，一律拒絕讓大腦「腦補瞎猜」
         if "No real-time context found" in context or not context.strip():
-            print(">> 🛑 [Circuit Breaker] 無法取得足夠情報，拒絕讓 AI 進行盲目臆測下單。")
+            print(">> 🛑 [Circuit Breaker] 無法取得新聞情報，拒絕盲目臆測下單。")
             continue
             
-        result = agent.analyze_event_debate(q, cat, context)
+        # Agent 分析 (結合新聞事實與社群情緒)
+        print(">> Hermes is analyzing via Debate & Sentiment...")
+        result = agent.analyze_event_debate(q, cat, context, sentiment_report)
         
         if result:
-            print("\n--- HERMES VERDICT ---")
-            print(f"Reasoning: {result.get('reasoning')}")
-            
             true_prob = float(result.get('probability', 0))
-            print(f"Agent True Probability: {true_prob*100:.1f}%")
+            full_context_to_log = f"{context}\n\n[Social Sentiment Report]:\n{sentiment_report}"
             
             # 對比盤口
             outcomes = row['outcomes'] if isinstance(row['outcomes'], list) else []
@@ -111,7 +112,7 @@ def main():
                 predicted_prob=true_prob,
                 prices=prices,
                 outcomes=outcomes,
-                context=context,
+                context=full_context_to_log,
                 reasoning=result.get('reasoning', ''),
                 edge_threshold=0.05 # 5%的定價誤差閥值
             )
