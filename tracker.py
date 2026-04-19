@@ -38,16 +38,19 @@ class PaperTracker:
             CREATE TABLE IF NOT EXISTS portfolio (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT,
-                balance REAL
+                balance REAL,
+                total_equity REAL DEFAULT 10000.0
             )
         ''')
         
         # Initialize Bankroll if empty
         cursor.execute("SELECT COUNT(*) FROM portfolio")
         if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO portfolio (timestamp, balance) VALUES (?, ?)", (datetime.now().isoformat(), 10000.0))
+            cursor.execute("INSERT INTO portfolio (timestamp, balance, total_equity) VALUES (?, ?, ?)", (datetime.now().isoformat(), 10000.0, 10000.0))
             
-        # 改良的 Migration (若有缺少欄位則嘗試補上)
+        # 改良的 Migration
+        try: cursor.execute("ALTER TABLE portfolio ADD COLUMN total_equity REAL DEFAULT 10000.0")
+        except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE paper_trades ADD COLUMN context_at_time TEXT")
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE paper_trades ADD COLUMN reasoning TEXT")
@@ -134,17 +137,18 @@ class PaperTracker:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Get Current Balance
-        cursor.execute("SELECT balance FROM portfolio ORDER BY id DESC LIMIT 1")
+        # Get Current Balance & Equity
+        cursor.execute("SELECT balance, total_equity FROM portfolio ORDER BY id DESC LIMIT 1")
         row = cursor.fetchone()
         current_balance = float(row[0]) if row else 10000.0
+        current_equity = float(row[1]) if row else 10000.0
         
         trade_size = current_balance * kelly_fraction
         new_balance = current_balance - trade_size
         
-        # Deduct from Portfolio
+        # Deduct from Portfolio (Equity remains the same when opening a fair-value trade)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("INSERT INTO portfolio (timestamp, balance) VALUES (?, ?)", (timestamp, new_balance))
+        cursor.execute("INSERT INTO portfolio (timestamp, balance, total_equity) VALUES (?, ?, ?)", (timestamp, new_balance, current_equity))
         
         # Log Trade
         cursor.execute('''

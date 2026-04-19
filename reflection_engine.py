@@ -70,14 +70,17 @@ def run_reflection_cycle():
             
             realized_pnl = payout - trade_size
             
-            # 將獎金發派回資金池
-            if payout > 0:
-                cursor.execute("SELECT balance FROM portfolio ORDER BY id DESC LIMIT 1")
-                row = cursor.fetchone()
-                current_balance = float(row[0]) if row else 10000.0
-                new_balance = current_balance + payout
-                from datetime import datetime
-                cursor.execute("INSERT INTO portfolio (timestamp, balance) VALUES (?, ?)", (datetime.now().isoformat(), new_balance))
+            # 將獎金發派回資金池，並更新淨值
+            cursor.execute("SELECT balance, total_equity FROM portfolio ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            current_balance = float(row[0]) if row else 10000.0
+            current_equity = float(row[1]) if row else 10000.0
+            
+            new_balance = current_balance + payout
+            new_equity = current_equity + realized_pnl
+            
+            from datetime import datetime
+            cursor.execute("INSERT INTO portfolio (timestamp, balance, total_equity) VALUES (?, ?, ?)", (datetime.now().isoformat(), new_balance, new_equity))
             
             # 判斷是否預測正確
             actual_yes = 1 if winner.lower() == 'yes' else 0

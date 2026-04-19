@@ -37,7 +37,8 @@ else:
     col1, col2, col3, col4 = st.columns(4)
     
     current_balance = pf_df.iloc[-1]['balance']
-    net_profit = current_balance - 10000.0
+    current_equity = pf_df.iloc[-1].get('total_equity', 10000.0)
+    net_profit = current_equity - 10000.0
     
     open_trades = len(trades_df[trades_df['status'] == 'OPEN']) if not trades_df.empty else 0
     closed_trades = trades_df[trades_df['status'] == 'CLOSED'] if not trades_df.empty else pd.DataFrame()
@@ -48,7 +49,7 @@ else:
         win_trades = closed_trades[closed_trades['realized_pnl'] > 0]
         win_rate = (len(win_trades) / num_closed) * 100
     
-    col1.metric("虛擬資金餘額 (Bankroll)", f"${current_balance:,.2f} USD", f"{net_profit:,.2f} USD")
+    col1.metric("真實總資產 (Total Equity)", f"${current_equity:,.2f} USD", f"{net_profit:,.2f} USD")
     col2.metric("真實開獎勝率 (Win Rate)", f"{win_rate:.1f}%", f"已開獎 {num_closed} 局")
     col3.metric("在途風險部位 (Open Bets)", f"{open_trades} 筆合約")
     
@@ -62,9 +63,14 @@ else:
     st.divider()
 
     # 圖表：真實資金成長線
-    st.subheader("📈 真實本金水位曲線 (Bankroll Over Time)")
+    st.subheader("📈 真實資金水位曲線 (Bankroll & Equity)")
     if len(pf_df) > 1:
-        fig = px.line(pf_df, x='timestamp', y='balance', markers=True, title="Virtual USD Bankroll Progression")
+        # 重塑 DataFrame 畫多條線
+        pf_melted = pf_df.melt(id_vars=['timestamp'], value_vars=['balance', 'total_equity'], var_name='Type', value_name='Amount')
+        # 幫線段重新命名以利閱讀
+        pf_melted['Type'] = pf_melted['Type'].replace({'balance': '手中現金 (Available Cash)', 'total_equity': '總資產淨值 (Total Equity)'})
+        
+        fig = px.line(pf_melted, x='timestamp', y='Amount', color='Type', markers=True, title="Portfolio Progression")
         fig.add_hline(y=10000, line_dash="dash", line_color="gray", annotation_text="Initial $10,000")
         st.plotly_chart(fig, use_container_width=True)
     else:
