@@ -1,0 +1,21 @@
+# Environments
+venv/
+env/
+.env
+
+# Database
+*.db
+*.sqlite3
+紙上看盤.db
+paper_trading.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Logs
+*.log
+run_log.txt

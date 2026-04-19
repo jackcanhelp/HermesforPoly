@@ -1,0 +1,121 @@
+import requests
+import json
+import logging
+import sqlite3
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+class HermesAgent:
+    def __init__(self, model_name="hermes", api_url="http://127.0.0.1:11434/api/chat"):
+        """
+        初始化 Agent，預設指向本機端 Ollama API
+        若您使用的模型名稱不同 (例如: nous-hermes2)，可在實例化時覆蓋 model_name
+        """
+        self.model_name = model_name
+        self.api_url = api_url
+
+    def get_lessons(self):
+        try:
+            conn = sqlite3.connect("paper_trading.db")
+            cursor = conn.cursor()
+            cursor.execute("SELECT lesson FROM lessons_learned ORDER BY id DESC LIMIT 5")
+            records = cursor.fetchall()
+            conn.close()
+            if not records:
+                return "No past lessons available yet."
+            return "\n".join([f"- {r[0]}" for r in records])
+        except Exception:
+            return "No past lessons available yet."
+
+    def build_judge_prompt(self, question, category, context, bull_arg, bear_arg):
+        past_lessons = self.get_lessons()
+        
+        system_prompt = (
+            "You are Hermes, the Supreme Judge of prediction markets. "
+            "Your task is to review the Bull and Bear arguments regarding the event and declare the final true probability of it occurring. "
+            "You must consider current factors based on the context.\n\n"
+            "--- PAST LESSONS LEARNED ---\n"
+            f"{past_lessons}\n"
+            "----------------------------\n\n"
+            "You MUST output your response ONLY in valid JSON format. Do not use Markdown JSON blocks. "
+            "The JSON must have exact two keys: 'reasoning' (a brief explanation of your final verdict resolving the debate) and "
+            "'probability' (a float between 0.00 and 1.00)."
+        )
+        
+        user_prompt = (
+            f"Category: {category}\nEvent Question: {question}\n\n"
+            f"[Context]:\n{context}\n\n"
+            f"--- DEBATE --- \n"
+            f"[BULL ARGUMENT]:\n{bull_arg}\n\n"
+            f"[BEAR ARGUMENT]:\n{bear_arg}\n\n"
+            f"Evaluate the true probability of this event resolving as Yes based on all facts and arguments provided."
+        )
+        
+        return system_prompt, user_prompt
+
+    def _call_llm(self, sys_p, usr_p, json_mode=False):
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": sys_p},
+                {"role": "user", "content": usr_p}
+            ],
+            "stream": False,
+            "options": {"temperature": 0.2}
+        }
+        if json_mode:
+            payload["format"] = "json"
+            
+        try:
+            response = requests.post(self.api_url, json=payload, timeout=120)
+            response.raise_for_status()
+            return response.json().get("message", {}).get("content", "").strip()
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error calling LLM: {e}")
+            return None
+
+    def analyze_event_debate(self, question, category="Unknown", context="No recent context."):
+        logging.info(f"Initiating Debate for: {question}")
+        
+        # 1. Bull Agent
+        logging.info(">> Bull Agent is arguing for YES...")
+        bull_sys = "You are a bullish analyst. Provide exactly one strong paragraph arguing WHY this event WILL happen. Do not argue both sides."
+        bull_usr = f"Context:\n{context}\n\nEvent: {question}"
+        bull_arg = self._call_llm(bull_sys, bull_usr) or "No strong bullish argument generated."
+        
+        # 2. Bear Agent
+        logging.info(">> Bear Agent is arguing for NO...")
+        bear_sys = "You are a bearish analyst. Provide exactly one strong paragraph arguing WHY this event WILL NOT happen. Do not argue both sides."
+        bear_usr = f"Context:\n{context}\n\nEvent: {question}"
+        bear_arg = self._call_llm(bear_sys, bear_usr) or "No strong bearish argument generated."
+        
+        # 3. Judge Agent
+        logging.info(">> Judge Agent is evaluating the debate...")
+        sys_p, usr_p = self.build_judge_prompt(question, category, context, bull_arg, bear_arg)
+        
+        content = self._call_llm(sys_p, usr_p, json_mode=True)
+        if not content: return None
+        
+        try:
+            parsed_data = json.loads(content)
+            if "reasoning" not in parsed_data or "probability" not in parsed_data:
+                 logging.warning(f"Unexpected JSON structure: {content}")
+                 return None
+            return parsed_data
+        except json.JSONDecodeError as e:
+            logging.error(f"Judge did not return valid JSON: {content} \nException: {e}")
+            return None
+
+if __name__ == "__main__":
+    # 簡單獨立測試
+    # 請確保背景已執行 `ollama run <model_name>`
+    agent = HermesAgent(model_name="gemma") # 使用您實際裝備的輕量模型名稱，如 'llama3', 'gemma:7b', 'nous-hermes2'
+    
+    test_q = "Will Apple acquire Tesla before 2026?"
+    res = agent.analyze_event(test_q, category="Business/Tech")
+    
+    if res:
+        print("\nAgent Analysis Result:")
+        print(f"Reasoning:\n{res['reasoning']}")
+        print(f"Estimated Probability: {res['probability']*100:.1f}%")
