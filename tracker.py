@@ -61,6 +61,12 @@ class PaperTracker:
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE paper_trades ADD COLUMN realized_pnl REAL DEFAULT 0.0")
         except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE paper_trades ADD COLUMN last_mtm_prob REAL DEFAULT NULL")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE paper_trades ADD COLUMN market_category TEXT")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE lessons_learned ADD COLUMN market_category TEXT")
+        except sqlite3.OperationalError: pass
             
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS lessons_learned (
@@ -86,7 +92,7 @@ class PaperTracker:
             logging.error(f"Error fetching open markets: {e}")
             return []
 
-    def evaluate_and_log(self, market_id, question, predicted_prob, prices, outcomes, context, reasoning, edge_threshold=0.05):
+    def evaluate_and_log(self, market_id, question, predicted_prob, prices, outcomes, context, reasoning, category="Unknown", edge_threshold=0.05):
         if not prices or len(prices) == 0:
             return
 
@@ -126,14 +132,14 @@ class PaperTracker:
                 
             if action:
                 logging.info(f"*** FOUND EDGE! Action: {action} on [{question}] | EV: {ev:.3f} | Kelly: {fractional_kelly*100:.1f}% ***")
-                self._log_trade(market_id, question, predicted_prob, price_paid, action, ev, context, reasoning, fractional_kelly)
+                self._log_trade(market_id, question, predicted_prob, price_paid, action, ev, context, reasoning, category, fractional_kelly)
             else:
                 logging.info(f"No sufficient edge. EV_Yes: {ev_yes:.3f}, EV_No: {ev_no:.3f}")
                 
         except Exception as e:
             logging.error(f"Failed to evaluate market EV: {e}")
 
-    def _log_trade(self, market_id, question, predicted_prob, market_price, action, ev, context, reasoning, kelly_fraction):
+    def _log_trade(self, market_id, question, predicted_prob, market_price, action, ev, context, reasoning, category, kelly_fraction):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -152,9 +158,9 @@ class PaperTracker:
         
         # Log Trade
         cursor.execute('''
-            INSERT INTO paper_trades (timestamp, market_id, question, predicted_prob, market_price, action, ev, status, context_at_time, reasoning, kelly_fraction, trade_size)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (timestamp, str(market_id), question, predicted_prob, market_price, action, ev, "OPEN", context, reasoning, kelly_fraction, trade_size))
+            INSERT INTO paper_trades (timestamp, market_id, question, predicted_prob, market_price, action, ev, status, context_at_time, reasoning, kelly_fraction, trade_size, market_category)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (timestamp, str(market_id), question, predicted_prob, market_price, action, ev, "OPEN", context, reasoning, kelly_fraction, trade_size, category))
         
         conn.commit()
         conn.close()

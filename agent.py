@@ -3,33 +3,77 @@ import json
 import logging
 import sqlite3
 import re
+import os
+import random
+import time
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class HermesAgent:
-    def __init__(self, model_name="hermes", api_url="http://127.0.0.1:11434/api/chat"):
-        """
-        初始化 Agent，預設指向本機端 Ollama API
-        若您使用的模型名稱不同 (例如: nous-hermes2)，可在實例化時覆蓋 model_name
-        """
+    def __init__(self, model_name="hermes", api_url=None):
         self.model_name = model_name
+        
+        # 讀取並解析 API Keys
+        def get_keys(env_var):
+            k = os.getenv(env_var, "")
+            return [x.strip() for x in k.split(",") if x.strip()]
+            
+        self.keys = {
+            "ollama": get_keys("OLLAMA_API_KEYS"),
+            "nvidia": get_keys("NVIDIA_API_KEYS"),
+            "groq": get_keys("GROQ_API_KEYS"),
+            "cerebras": get_keys("CEREBRAS_API_KEYS")
+        }
+        
+        self.urls = {
+            "ollama": "https://ollama.com/v1/chat/completions" if self.keys["ollama"] else "http://127.0.0.1:11434/v1/chat/completions",
+            "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
+            "groq": "https://api.groq.com/openai/v1/chat/completions",
+            "cerebras": "https://api.cerebras.ai/v1/chat/completions"
+        }
+        
+        # default local/cloud if specific api_url is provided
         self.api_url = api_url
 
-    def get_lessons(self):
+    def get_lessons(self, market_category=None):
+        rulebook_content = ""
+        rulebook_path = "master_rulebook.md"
+        if os.path.exists(rulebook_path):
+            with open(rulebook_path, "r", encoding="utf-8") as f:
+                rulebook_content = f.read()
+
+        recent_lessons = []
         try:
             conn = sqlite3.connect("paper_trading.db")
             cursor = conn.cursor()
-            cursor.execute("SELECT lesson FROM lessons_learned ORDER BY id DESC LIMIT 5")
+            if market_category:
+                # 取得同分類的最近3筆教訓
+                cursor.execute("SELECT lesson FROM lessons_learned WHERE market_category = ? ORDER BY id DESC LIMIT 3", (market_category,))
+            else:
+                cursor.execute("SELECT lesson FROM lessons_learned ORDER BY id DESC LIMIT 3")
             records = cursor.fetchall()
             conn.close()
-            if not records:
-                return "No past lessons available yet."
-            return "\n".join([f"- {r[0]}" for r in records])
-        except Exception:
-            return "No past lessons available yet."
+            if records:
+                recent_lessons = [f"- {r[0]}" for r in records]
+        except Exception as e:
+            logging.error(f"Error fetching lessons: {e}")
+
+        final_context = ""
+        if rulebook_content:
+            final_context += f"[Hermes Master Rulebook]\n{rulebook_content}\n\n"
+        if recent_lessons:
+            final_context += "[Recent Contextual Lessons]\n" + "\n".join(recent_lessons)
+            
+        if not final_context:
+            return "No past lessons or rulebook available yet."
+            
+        return final_context
 
     def build_judge_prompt(self, question, category, context, bull_arg, bear_arg, sentiment_report):
-        past_lessons = self.get_lessons()
+        past_lessons = self.get_lessons(market_category=category)
         
         system_prompt = (
             "You are Hermes, the Supreme Judge of prediction markets. "
@@ -57,26 +101,68 @@ class HermesAgent:
         
         return system_prompt, judge_prompt
 
-    def _call_llm(self, sys_p, usr_p, json_mode=False):
-        payload = {
-            "model": self.model_name,
-            "messages": [
-                {"role": "system", "content": sys_p},
-                {"role": "user", "content": usr_p}
-            ],
-            "stream": False,
-            "options": {"temperature": 0.2}
-        }
-        if json_mode:
-            payload["format"] = "json"
+    def _call_llm_with_provider(self, sys_p, usr_p, json_mode=False, provider="ollama", override_model=None):
+        url = self.urls.get(provider, self.urls["ollama"])
+        keys = self.keys.get(provider, [])
+        target_model = override_model if override_model else self.model_name
+        
+        is_openai = "v1" in url
+        
+        if is_openai:
+            payload = {
+                "model": target_model,
+                "messages": [
+                    {"role": "system", "content": sys_p},
+                    {"role": "user", "content": usr_p}
+                ],
+                "temperature": 0.2
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+        else:
+            payload = {
+                "model": target_model,
+                "messages": [
+                    {"role": "system", "content": sys_p},
+                    {"role": "user", "content": usr_p}
+                ],
+                "stream": False,
+                "options": {"temperature": 0.2}
+            }
+            if json_mode:
+                payload["format"] = "json"
+            
+        headers = {"Content-Type": "application/json"}
+        if keys:
+            chosen_key = random.choice(keys)
+            headers["Authorization"] = f"Bearer {chosen_key}"
             
         try:
-            response = requests.post(self.api_url, json=payload, timeout=120)
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
-            return response.json().get("message", {}).get("content", "").strip()
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Error calling LLM: {e}")
+            data = response.json()
+            if is_openai:
+                return data["choices"][0]["message"]["content"].strip()
+            return data.get("message", {}).get("content", "").strip()
+        except Exception as e:
+            logging.error(f"Error calling {provider} LLM: {e}")
             return None
+
+    def _call_llm_with_fallback(self, sys_p, usr_p, json_mode=False, providers=[]):
+        # Fallback mechanism iterating through a list of (provider, model) tuples
+        for provider, model in providers:
+            if provider != "ollama" and not self.keys.get(provider):
+                continue # Skip if no keys available for cloud provider
+                
+            logging.info(f"Attempting API call via {provider.upper()} with model {model}...")
+            result = self._call_llm_with_provider(sys_p, usr_p, json_mode, provider, model)
+            if result:
+                return result
+            logging.warning(f"{provider.upper()} failed. Trying next fallback...")
+            time.sleep(1)
+            
+        logging.error("All providers in fallback chain failed!")
+        return None
 
     def analyze_social_sentiment(self, question, social_context):
         """讓群眾心理學特工 (Sentiment Analyst) 評估社交網路的情緒動能"""
@@ -95,44 +181,52 @@ class HermesAgent:
             f"What is the crowd's momentum?"
         )
         
-        payload = {
-            "model": self.model_name,
-            "messages": [
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            "stream": False,
-            "options": {"temperature": 0.3}
-        }
+        # Routing strategy for Sentiment (Speed-focused 8B)
+        providers_chain = [
+            ("cerebras", "llama3.1-8b"),
+            ("groq", "llama-3.1-8b-instant"),
+            ("nvidia", "meta/llama-3.1-8b-instruct"),
+            ("ollama", self.model_name)
+        ]
         
-        try:
-            response = requests.post(self.api_url, json=payload, timeout=60)
-            result_str = response.json().get('message', {}).get('content', '').strip()
-            return result_str
-        except Exception as e:
-            logging.error(f"Sentiment analysis failed: {e}")
-            return "[NEUTRAL/MIXED] Failed to analyze sentiment."
+        result = self._call_llm_with_fallback(sys_prompt, prompt, json_mode=False, providers=providers_chain)
+        return result if result else "[NEUTRAL/MIXED] Failed to analyze sentiment."
 
     def analyze_event_debate(self, question, category, context, sentiment_report=""):
         logging.info(f"Initiating Debate for: {question}")
+        
+        # Routing strategy for Bull/Bear (Intelligence-focused 70B)
+        debate_chain = [
+            ("groq", "llama-3.3-70b-versatile"),
+            ("nvidia", "meta/llama-3.1-70b-instruct"),
+            ("cerebras", "llama3.1-8b"), # Cerebras currently doesn't offer 70b on free tier
+            ("ollama", self.model_name)
+        ]
         
         # 1. Bull Agent
         logging.info(">> Bull Agent is arguing for YES...")
         bull_sys = "You are a bullish analyst. Provide exactly one strong paragraph arguing WHY this event WILL happen. Do not argue both sides."
         bull_usr = f"Context:\n{context}\n\nEvent: {question}"
-        bull_arg = self._call_llm(bull_sys, bull_usr) or "No strong bullish argument generated."
+        bull_arg = self._call_llm_with_fallback(bull_sys, bull_usr, json_mode=False, providers=debate_chain) or "No strong bullish argument generated."
         
         # 2. Bear Agent
         logging.info(">> Bear Agent is arguing for NO...")
         bear_sys = "You are a bearish analyst. Provide exactly one strong paragraph arguing WHY this event WILL NOT happen. Do not argue both sides."
         bear_usr = f"Context:\n{context}\n\nEvent: {question}"
-        bear_arg = self._call_llm(bear_sys, bear_usr) or "No strong bearish argument generated."
+        bear_arg = self._call_llm_with_fallback(bear_sys, bear_usr, json_mode=False, providers=debate_chain) or "No strong bearish argument generated."
+        
+        # Routing strategy for Judge (Supreme-focused 405B)
+        judge_chain = [
+            ("nvidia", "meta/llama-3.1-405b-instruct"),
+            ("groq", "llama-3.3-70b-versatile"), # Groq fallback if 405b fails
+            ("ollama", self.model_name)
+        ]
         
         # 3. Judge Agent
         logging.info(">> Judge Agent is evaluating the debate...")
         sys_p, usr_p = self.build_judge_prompt(question, category, context, bull_arg, bear_arg, sentiment_report)
         
-        content = self._call_llm(sys_p, usr_p, json_mode=True)
+        content = self._call_llm_with_fallback(sys_p, usr_p, json_mode=True, providers=judge_chain)
         if not content: return None
         
         try:
@@ -146,13 +240,9 @@ class HermesAgent:
             return None
 
 if __name__ == "__main__":
-    # 簡單獨立測試
-    # 請確保背景已執行 `ollama run <model_name>`
-    agent = HermesAgent(model_name="gemma") # 使用您實際裝備的輕量模型名稱，如 'llama3', 'gemma:7b', 'nous-hermes2'
-    
+    agent = HermesAgent(model_name="llama3.1")
     test_q = "Will Apple acquire Tesla before 2026?"
-    res = agent.analyze_event(test_q, category="Business/Tech")
-    
+    res = agent.analyze_event_debate(test_q, "Business/Tech", "Tesla stocks are booming, Apple has lots of cash.", "[MILDLY POSITIVE]")
     if res:
         print("\nAgent Analysis Result:")
         print(f"Reasoning:\n{res['reasoning']}")

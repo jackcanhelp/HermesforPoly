@@ -5,30 +5,76 @@ from ddgs import DDGS
 from bs4 import BeautifulSoup
 from datetime import datetime
 import concurrent.futures
+import os
+import random
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class PolyResearcher:
-    def __init__(self, llm_url="http://127.0.0.1:11434/api/chat", llm_model="gemma"):
+    def __init__(self, llm_url=None, llm_model="gemma"):
         self.ddgs = DDGS()
-        self.llm_url = llm_url
         self.llm_model = llm_model
+        
+        # 讀取 API Keys
+        keys_str = os.getenv("OLLAMA_API_KEYS", "")
+        self.api_keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+        
+        nvidia_keys_str = os.getenv("NVIDIA_API_KEYS", "")
+        self.nvidia_keys = [k.strip() for k in nvidia_keys_str.split(",") if k.strip()]
+        
+        # 自動切換 API URL
+        if llm_url:
+            self.llm_url = llm_url
+        elif "/" in self.llm_model and self.nvidia_keys:
+            self.llm_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+            self.api_keys = self.nvidia_keys
+        elif self.api_keys:
+            # 使用 Ollama 官方雲端的 OpenAI 相容格式節點
+            self.llm_url = "https://ollama.com/v1/chat/completions"
+        else:
+            self.llm_url = "http://127.0.0.1:11434/v1/chat/completions"
 
     def _call_llm(self, sys_p, usr_p, json_mode=False):
-        payload = {
-            "model": self.llm_model,
-            "messages": [
-                {"role": "system", "content": sys_p},
-                {"role": "user", "content": usr_p}
-            ],
-            "stream": False,
-            "options": {"temperature": 0.2}
-        }
-        if json_mode:
-            payload["format"] = "json"
+        is_openai = "v1" in self.llm_url
+        
+        if is_openai:
+            payload = {
+                "model": self.llm_model,
+                "messages": [
+                    {"role": "system", "content": sys_p},
+                    {"role": "user", "content": usr_p}
+                ],
+                "temperature": 0.2
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+        else:
+            payload = {
+                "model": self.llm_model,
+                "messages": [
+                    {"role": "system", "content": sys_p},
+                    {"role": "user", "content": usr_p}
+                ],
+                "stream": False,
+                "options": {"temperature": 0.2}
+            }
+            if json_mode:
+                payload["format"] = "json"
+            
+        headers = {"Content-Type": "application/json"}
+        if self.api_keys:
+            chosen_key = random.choice(self.api_keys)
+            headers["Authorization"] = f"Bearer {chosen_key}"
+            
         try:
-            response = requests.post(self.llm_url, json=payload, timeout=120)
-            return response.json().get("message", {}).get("content", "").strip()
+            response = requests.post(self.llm_url, headers=headers, json=payload, timeout=120)
+            data = response.json()
+            if is_openai:
+                return data["choices"][0]["message"]["content"].strip()
+            return data.get("message", {}).get("content", "").strip()
         except Exception as e:
             logging.error(f"Researcher LLM error: {e}")
             return None

@@ -35,11 +35,32 @@ def check_market_resolution(market_id):
                     except:
                         pass
                 
-                return True, winning_outcome
-        return False, None
+                return True, winning_outcome, None
+            else:
+                outcomes = m.get('outcomes', [])
+                if isinstance(outcomes, str):
+                    import json
+                    outcomes = json.loads(outcomes)
+                prices = m.get('outcomePrices', [])
+                if isinstance(prices, str):
+                    import json
+                    prices = json.loads(prices)
+                yes_idx = None
+                for idx, out in enumerate(outcomes):
+                    if isinstance(out, str) and out.lower() == 'yes':
+                        yes_idx = idx
+                        break
+                if yes_idx is None: yes_idx = 0
+                
+                try:
+                    current_yes_price = float(prices[yes_idx])
+                    return False, None, current_yes_price
+                except:
+                    return False, None, None
+        return False, None, None
     except Exception as e:
         logging.error(f"Error checking market {market_id}: {e}")
-        return False, None
+        return False, None, None
 
 def run_reflection_cycle():
     logging.info("Starting Reflection Cycle...")
@@ -49,15 +70,14 @@ def run_reflection_cycle():
     conn = sqlite3.connect("paper_trading.db")
     cursor = conn.cursor()
     
-    cursor.execute("SELECT id, market_id, question, predicted_prob, action, context_at_time, reasoning, trade_size, market_price FROM paper_trades WHERE status = 'OPEN'")
+    cursor.execute("SELECT id, market_id, question, predicted_prob, action, context_at_time, reasoning, trade_size, market_price, last_mtm_prob, market_category FROM paper_trades WHERE status = 'OPEN'")
     open_trades = cursor.fetchall()
-    
-    agent = HermesAgent(model_name="gemma", api_url="http://127.0.0.1:11434/api/chat")
-    
+    # 使用 Llama 3.1 405B 作為終審與反思法官 (NVIDIA NIM API)
+    agent = HermesAgent(model_name="meta/llama-3.1-405b-instruct") 
     for trade in open_trades:
-        trade_id, m_id, q, prob, action, ctx, reason, trade_size, price_paid = trade
+        trade_id, m_id, q, prob, action, ctx, reason, trade_size, price_paid, last_mtm_prob, market_category = trade
         
-        is_closed, winner = check_market_resolution(m_id)
+        is_closed, winner, current_yes_price = check_market_resolution(m_id)
         if is_closed and winner is not None:
             logging.info(f"Market [{q}] resolved! Winner: {winner}")
             
@@ -96,32 +116,72 @@ def run_reflection_cycle():
             )
             
             sys_p = "You are an AI learning system. You extract universal lessons from failed or successful predictions to avoid future mistakes. Answer directly with the key lesson, no JSON format required here."
-            payload = {
-                "model": agent.model_name,
-                "messages": [
-                    {"role": "system", "content": sys_p},
-                    {"role": "user", "content": reflection_prompt}
-                ],
-                "stream": False,
-                "options": {"temperature": 0.3}
-            }
             
             try:
-                response = requests.post(agent.api_url, json=payload, timeout=60)
-                lesson = response.json().get("message", {}).get("content", "").strip()
+                providers_chain = [
+                    ("nvidia", "meta/llama-3.1-405b-instruct"),
+                    ("groq", "llama-3.3-70b-versatile"),
+                    ("ollama", agent.model_name)
+                ]
+                # 使用 Agent 內建的 _call_llm_with_fallback 方法，自動處理備援邏輯
+                lesson = agent._call_llm_with_fallback(sys_p, reflection_prompt, json_mode=False, providers=providers_chain)
                 
-                # 儲存 Reflection 與真實損益
-                cursor.execute("INSERT INTO lessons_learned (timestamp, category, lesson) VALUES (datetime('now'), 'Prediction', ?)", (lesson,))
-                cursor.execute("UPDATE paper_trades SET status = 'CLOSED', realized_pnl = ? WHERE id = ?", (realized_pnl, trade_id))
-                conn.commit()
-                logging.info(f"Lesson extracted and saved: {lesson[:50]}...")
+                if lesson:
+                    # 儲存 Reflection 與真實損益
+                    cursor.execute("INSERT INTO lessons_learned (timestamp, category, lesson, market_category) VALUES (datetime('now'), 'Prediction', ?, ?)", (lesson, market_category))
+                    cursor.execute("UPDATE paper_trades SET status = 'CLOSED', realized_pnl = ? WHERE id = ?", (realized_pnl, trade_id))
+                    conn.commit()
+                    logging.info(f"Lesson extracted and saved: {lesson[:50]}...")
+                else:
+                    logging.warning("LLM returned empty lesson.")
             except Exception as e:
                 logging.error(f"Failed to generate reflection: {e}")
                 
+        elif not is_closed and current_yes_price is not None:
+            # MTM Reflection (盯市反思)
+            current_asset_price = current_yes_price if action == 'BUY YES' else (1.0 - current_yes_price)
+            ref_prob = last_mtm_prob if last_mtm_prob is not None else price_paid
+            if abs(current_asset_price - ref_prob) >= 0.25:
+                logging.info(f"Market [{q}] shifted! Expected: {prob:.2f}, Last Ref: {ref_prob:.2f}, Current: {current_asset_price:.2f}. Triggering MTM Reflection.")
+                
+                mtm_prompt = (
+                    f"Event: {q}\n"
+                    f"Context at the time of prediction:\n{ctx}\n\n"
+                    f"Your Reasoning at the time:\n{reason}\n"
+                    f"Your Predicted Probability for 'Yes': {prob*100}%\n"
+                    f"Market Shift: The crowd's consensus probability for your side has moved significantly to {current_asset_price*100}%.\n\n"
+                    f"Provide a short, critical 'lesson learned' stating WHY your original reasoning might be diverging from the market. Focus on what new information the market might be digesting or what you might have over/under-weighted."
+                )
+                
+                sys_p = "You are an AI learning system. You extract universal lessons from market probability shifts. Answer directly with the key lesson, no JSON format required here."
+                
+                try:
+                    providers_chain = [
+                        ("nvidia", "meta/llama-3.1-405b-instruct"),
+                        ("groq", "llama-3.3-70b-versatile"),
+                        ("ollama", agent.model_name)
+                    ]
+                    lesson = agent._call_llm_with_fallback(sys_p, mtm_prompt, json_mode=False, providers=providers_chain)
+                    if lesson:
+                        cursor.execute("INSERT INTO lessons_learned (timestamp, category, lesson, market_category) VALUES (datetime('now'), 'MTM Reflection', ?, ?)", (lesson, market_category))
+                        cursor.execute("UPDATE paper_trades SET last_mtm_prob = ? WHERE id = ?", (current_asset_price, trade_id))
+                        conn.commit()
+                        logging.info(f"MTM Lesson extracted and saved: {lesson[:50]}...")
+                    else:
+                        logging.warning("LLM returned empty MTM lesson.")
+                except Exception as e:
+                    logging.error(f"Failed to generate MTM reflection: {e}")
+                    
         time.sleep(1) # API Rate limit
         
     conn.close()
     logging.info("Reflection Cycle Completed.")
 
 if __name__ == "__main__":
-    run_reflection_cycle()
+    try:
+        run_reflection_cycle()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+    finally:
+        input("\n按下 Enter 鍵結束程式...")

@@ -45,19 +45,20 @@ def filter_potential_markets(df):
             except:
                 pass
                 
-        if is_interesting and float(row.get('liquidity', 0)) > 500: # 將流動性門檻降到 500，納入稍微冷門但可能有更高利潤的市場
+        if is_interesting and float(row.get('liquidity', 0)) > 100: # 降低流動性門檻到 100，挖掘冷門盤口
             potential_markets.append(row)
             
     return potential_markets
 
 def main():
-    # 1. 初始化模組
-    researcher = PolyResearcher()
-    agent = HermesAgent(model_name="gemma", api_url="http://127.0.0.1:11434/api/chat")
+    # 1. 初始化模組 (套用雙雲端混血架構 - 使用 NVIDIA 頂級模型)
+    researcher = PolyResearcher(llm_model="nvidia/nemotron-4-340b-instruct") # 負責長文本閱讀
+    sentiment_agent = HermesAgent(model_name="mistralai/mixtral-8x22b-instruct-v0.1") # 負責角色與情緒分析
+    judge_agent = HermesAgent(model_name="meta/llama-3.1-405b-instruct") # 負責終審裁判
     tracker = PaperTracker()
     
-    # 2. 獲取市場 (掃描前 200 個最熱門的市場)
-    df = fetch_active_markets(200)
+    # 2. 獲取市場 (掃描前 500 個最熱門的市場)
+    df = fetch_active_markets(500)
     if df is None:
         return
         
@@ -67,10 +68,10 @@ def main():
     # 剔除已經在手上的未平倉單 (避免重複計算 EV 與浪費運算)
     markets = [m for m in all_potential if str(m.get('id', '')) not in open_market_ids]
     
-    logging.info(f"Filtered {len(all_potential)} interesting markets. After excluding already bought ones, {len(markets)} remaining. Processing top 10...")
+    logging.info(f"Filtered {len(all_potential)} interesting markets. After excluding already bought ones, {len(markets)} remaining. Processing top 30...")
     
     # 3. 推理與印出
-    for idx, row in enumerate(markets[:10]):
+    for idx, row in enumerate(markets[:30]):
         q = row['question']
         cat = row['category']
         
@@ -83,7 +84,7 @@ def main():
         # 社群情緒雷達 (Phase 5)
         print(">> Social Sentinel is analyzing Reddit momentum...")
         social_context = researcher.gather_social_sentiment(q)
-        sentiment_report = agent.analyze_social_sentiment(q, social_context)
+        sentiment_report = sentiment_agent.analyze_social_sentiment(q, social_context)
         
         # 熔斷機制 (Circuit Breaker)：如果情報員真的被擋抓不到資料，一律拒絕讓大腦「腦補瞎猜」
         if "No real-time context found" in context or not context.strip():
@@ -92,10 +93,14 @@ def main():
             
         # Agent 分析 (結合新聞事實與社群情緒)
         print(">> Hermes is analyzing via Debate & Sentiment...")
-        result = agent.analyze_event_debate(q, cat, context, sentiment_report)
+        result = judge_agent.analyze_event_debate(q, cat, context, sentiment_report)
         
         if result:
             true_prob = float(result.get('probability', 0))
+            # 修正 LLM 回傳百分比 (例如 73.5) 的情況，將其轉回 0~1 之間的浮點數
+            if true_prob > 1.0:
+                true_prob = true_prob / 100.0
+                
             full_context_to_log = f"{context}\n\n[Social Sentiment Report]:\n{sentiment_report}"
             
             # 對比盤口
@@ -114,12 +119,13 @@ def main():
                 outcomes=outcomes,
                 context=full_context_to_log,
                 reasoning=result.get('reasoning', ''),
-                edge_threshold=0.05 # 5%的定價誤差閥值
+                category=cat,
+                edge_threshold=0.08 # 提升為8%的安全定價誤差閥值
             )
         else:
             print(">> Agent failed to process this event.")
             
-        time.sleep(2) # 避免 Rate limit
+        time.sleep(15) # 延長至 15 秒，避免觸發 NVIDIA Free Tier 的 API Rate Limit (429 Too Many Requests)
         
     print("\n--- 模擬統計報告 ---")
     tracker.show_stats()
@@ -127,18 +133,22 @@ def main():
 def daemon_loop():
     from reflection_engine import run_reflection_cycle
     while True:
-        logging.info("=== 啟動每小時掃描與反思循環 ===")
+        logging.info("=== 啟動每15分鐘掃描與反思循環 ===")
         try:
             # 1. 結算舊單與提取反思 (Reflection)
             run_reflection_cycle()
             
             # 2. 進行新一輪的掃描與下單
             main()
+            
+            # 3. 進行大腦突觸修剪與分類總結 (Meta-Reflection)
+            from meta_reflection import consolidate_memory
+            consolidate_memory()
         except Exception as e:
             logging.error(f"循環中發生錯誤: {e}")
             
-        logging.info("目前循環結束。系統將進入待命 60 分鐘...")
-        time.sleep(3600)  # 休眠 1 小時
+        logging.info("目前循環結束。系統將進入待命 15 分鐘...")
+        time.sleep(900)  # 休眠 15 分鐘
 
 if __name__ == "__main__":
     try:
