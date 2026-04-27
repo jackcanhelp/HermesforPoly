@@ -4,10 +4,10 @@ import logging
 from ddgs import DDGS
 from bs4 import BeautifulSoup
 from datetime import datetime
-import concurrent.futures
 import os
-import random
+import time
 from dotenv import load_dotenv
+from agent import HermesAgent
 
 load_dotenv()
 
@@ -16,86 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class PolyResearcher:
     def __init__(self, llm_url=None, llm_model="gemma"):
         self.ddgs = DDGS()
-        self.llm_model = llm_model
-        
-        # 讀取 API Keys
-        keys_str = os.getenv("OLLAMA_API_KEYS", "")
-        self.api_keys = [k.strip() for k in keys_str.split(",") if k.strip()]
-        
-        nvidia_keys_str = os.getenv("NVIDIA_API_KEYS", "")
-        self.nvidia_keys = [k.strip() for k in nvidia_keys_str.split(",") if k.strip()]
-        
-        # 自動切換 API URL
-        if llm_url:
-            self.llm_url = llm_url
-        elif "/" in self.llm_model and self.nvidia_keys:
-            self.llm_url = "https://integrate.api.nvidia.com/v1/chat/completions"
-            self.api_keys = self.nvidia_keys
-        elif self.api_keys:
-            # 使用 Ollama 官方雲端的 OpenAI 相容格式節點
-            self.llm_url = "https://ollama.com/v1/chat/completions"
-        else:
-            self.llm_url = "http://127.0.0.1:11434/v1/chat/completions"
-
-    def _call_llm(self, sys_p, usr_p, json_mode=False):
-        is_openai = "v1" in self.llm_url
-        
-        if is_openai:
-            payload = {
-                "model": self.llm_model,
-                "messages": [
-                    {"role": "system", "content": sys_p},
-                    {"role": "user", "content": usr_p}
-                ],
-                "temperature": 0.2
-            }
-            if json_mode:
-                payload["response_format"] = {"type": "json_object"}
-        else:
-            payload = {
-                "model": self.llm_model,
-                "messages": [
-                    {"role": "system", "content": sys_p},
-                    {"role": "user", "content": usr_p}
-                ],
-                "stream": False,
-                "options": {"temperature": 0.2}
-            }
-            if json_mode:
-                payload["format"] = "json"
-            
-        headers = {"Content-Type": "application/json"}
-        if self.api_keys:
-            chosen_key = random.choice(self.api_keys)
-            headers["Authorization"] = f"Bearer {chosen_key}"
-            
-        try:
-            response = requests.post(self.llm_url, headers=headers, json=payload, timeout=120)
-            data = response.json()
-            if is_openai:
-                return data["choices"][0]["message"]["content"].strip()
-            return data.get("message", {}).get("content", "").strip()
-        except Exception as e:
-            logging.error(f"Researcher LLM error: {e}")
-            return None
-
-    def _generate_sub_queries(self, question):
-        logging.info(f"Generating sub-queries for: {question}")
-        sys_p = "You are a research analyst. Given a prediction market question, generate exactly 3 specific Google search queries to gather the most crucial facts needed to resolve it. Output only valid JSON in this format: {'queries': ['q1', 'q2', 'q3']}"
-        usr_p = f"Event Question: {question}\nCurrent year: {datetime.now().year}\nGenerate 3 search queries."
-        
-        resp = self._call_llm(sys_p, usr_p, json_mode=True)
-        if resp:
-            try:
-                queries = json.loads(resp).get("queries", [])
-                if isinstance(queries, list) and len(queries) > 0:
-                    return queries
-            except Exception as e:
-                logging.error(f"Failed to parse LLM sub-queries: {e}")
-                
-        # Fallback
-        year = datetime.now().year
-        return [f"{question} news {year}", f"{question} official statement {year}", f"{question} site:x.com"]
+        # 我們將使用 HermesAgent 進行推理，捨棄舊的硬編碼 API 請求
 
     def _fetch_url_text(self, url):
         try:
@@ -116,7 +37,7 @@ class PolyResearcher:
         return ""
 
     def _scrape_duckduckgo(self, query):
-        logging.info(f"🔎 Searching: {query}")
+        logging.info(f"🔎 Action [search_web]: {query}")
         results_text = ""
         try:
             # DDG 搜尋 URL
@@ -127,62 +48,43 @@ class PolyResearcher:
                 url = doc.get("href", "")
                 snippet = doc.get("body", "")
                 
-                # 若是 Twitter 則直接用 Snippet，因為 Twitter 會擋 request
                 if "twitter.com" in url or "x.com" in url:
                     results_text += f"\n[Tweet Snippet]: {snippet}"
                     continue
                     
-                # 嘗試爬取內文
                 full_text = self._fetch_url_text(url)
                 if len(full_text) > 100:
-                    results_text += f"\n[Full-Text Source]: {full_text}"
+                    results_text += f"\n[Source URL]: {url}\n[Content]: {full_text}"
                 else:
-                    results_text += f"\n[Snippet Source]: {snippet}"
+                    results_text += f"\n[Source URL]: {url}\n[Snippet]: {snippet}"
                     
         except Exception as e:
             logging.error(f"DDGS failed for {query}: {e}")
         return results_text
 
-    def _summarize_research(self, raw_knowledge, question):
-        logging.info("🧠 Summarizing research into a Digest...")
-        sys_p = "You are a senior intelligence officer. Synthesize the raw, messy scraped web data into a crisp, bulleted 'Intelligence Digest' specifically aimed at helping analysts predict the likelihood of the event resolving as Yes. Drop irrelevant info."
-        usr_p = f"Target Event: {question}\n\n[RAW SCRAPED DATA]:\n{raw_knowledge[:10000]}\n\nWrite the comprehensive digest."
-        
-        digest = self._call_llm(sys_p, usr_p)
-        return digest if digest else raw_knowledge[:2000]
-
-    def gather_intelligence(self, query):
-        """Auto-Researcher 主迴圈"""
-        # 1. 拆解子任務
-        sub_queries = self._generate_sub_queries(query)
-        logging.info(f"Sub-Queries: {sub_queries}")
-        
-        import time
-        # 2. 循序爬網頁 (放棄多線程以免觸發 DuckDuckGo 的 403 防爬蟲封鎖機制)
-        raw_knowledge = ""
-        for q in sub_queries:
-            res = self._scrape_duckduckgo(q)
-            raw_knowledge += res + "\n"
-            time.sleep(2) # 友善爬蟲暫停
-                
-        if not raw_knowledge.strip():
-            return "No real-time context found online."
-            
-        # 3. 濃縮報告
-        digest = self._summarize_research(raw_knowledge, query)
-        logging.info(">> Research Digest Generated.")
-        return digest
+    def _fetch_crypto_price(self, ticker):
+        """Fetch current crypto price from CoinGecko API"""
+        logging.info(f"💰 Action [fetch_crypto_price]: {ticker}")
+        try:
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={ticker.lower()}&vs_currencies=usd"
+            r = requests.get(url, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                if ticker.lower() in data:
+                    price = data[ticker.lower()]["usd"]
+                    return f"The current live price of {ticker.upper()} is ${price} USD."
+            return f"Failed to fetch price for {ticker}. Try searching the web instead."
+        except Exception as e:
+            return f"Error fetching price: {e}"
 
     def gather_social_sentiment(self, query):
         """利用搜尋引擎的 site:reddit.com 語法，免 API 捕捉社群論壇的最新討論串"""
-        logging.info(f"Scraping social forums (Reddit) for: {query}")
+        logging.info(f"🗣️ Action [search_reddit]: {query}")
         
-        # 取題目前幾個關鍵字進行模糊搜尋
         core_keywords = " ".join(query.replace('?', '').replace(',', '').split()[:5])
         social_q = f"{core_keywords} site:reddit.com"
         
         try:
-            import time
             results = self.ddgs.text(social_q, max_results=5)
             social_snippets = []
             if results:
@@ -200,3 +102,88 @@ class PolyResearcher:
         except Exception as e:
             logging.error(f"Social sentiment scrape failed: {e}")
             return "Failed to retrieve social data due to rate limits."
+
+    def gather_intelligence(self, query):
+        """Auto-Researcher ReAct 主迴圈"""
+        logging.info(f"🧠 Researcher entering ReAct Loop for: {query}")
+        
+        # 使用 70B 模型作為情報員的大腦，因為需要極強的 Tool Calling 邏輯能力
+        agent = HermesAgent(model_name="llama-3.3-70b-versatile")
+        providers_chain = [
+            ("groq", "llama-3.3-70b-versatile"),
+            ("nvidia", "meta/llama-3.1-70b-instruct"),
+            ("ollama", agent.model_name)
+        ]
+        
+        tools_schema = '''
+You have access to the following tools:
+1. `search_web`: Search the internet for general news and facts. Input argument should be a specific search query.
+2. `scrape_website`: Read the full text of a specific URL. Input argument should be the exact URL.
+3. `search_reddit`: Search Reddit for social sentiment and rumors. Input argument should be the topic.
+4. `fetch_crypto_price`: Get the live USD price of a cryptocurrency (e.g. 'bitcoin', 'ethereum'). Input argument should be the coin name.
+
+You must output EXACTLY a valid JSON object in the following format at each step. Do NOT output anything outside the JSON.
+{
+  "thought": "Your reasoning about what to do next based on the evidence.",
+  "action": "The exact name of the tool to use (search_web, scrape_website, search_reddit, fetch_crypto_price), OR 'FINAL_ANSWER' if you have gathered enough facts.",
+  "action_input": "The string argument for the tool, OR your final comprehensive intelligence digest if action is FINAL_ANSWER."
+}
+'''
+        
+        memory = f"Event Question to Resolve: {query}\nCurrent year: {datetime.now().year}\n\n[Action History]\n"
+        
+        max_steps = 4
+        final_digest = ""
+        
+        for step in range(max_steps):
+            sys_p = "You are an elite autonomous research agent. Your goal is to gather undeniable facts for a prediction market question. Think step-by-step. " + tools_schema
+            usr_p = memory + "\nWhat is your next step?"
+            
+            resp = agent._call_llm_with_fallback(sys_p, usr_p, json_mode=True, providers=providers_chain)
+            if not resp:
+                logging.error("ReAct LLM call failed.")
+                break
+                
+            try:
+                parsed = json.loads(resp)
+                thought = parsed.get("thought", "")
+                action = parsed.get("action", "")
+                action_input = parsed.get("action_input", "")
+                
+                logging.info(f"🤔 Thought: {thought}")
+                
+                if action == "FINAL_ANSWER":
+                    logging.info("🎯 Researcher found the final answer.")
+                    final_digest = action_input
+                    break
+                    
+                observation = ""
+                if action == "search_web":
+                    observation = self._scrape_duckduckgo(action_input)
+                elif action == "scrape_website":
+                    observation = self._fetch_url_text(action_input)
+                elif action == "search_reddit":
+                    observation = self.gather_social_sentiment(action_input)
+                elif action == "fetch_crypto_price":
+                    observation = self._fetch_crypto_price(action_input)
+                else:
+                    observation = "Unknown tool. Please use a valid tool name or FINAL_ANSWER."
+                
+                if not observation or len(observation.strip()) < 5:
+                    observation = "No useful results found from this action. Try another tool or different keywords."
+                    
+                memory += f"\n- Thought: {thought}\n- Action: {action}({action_input})\n- Observation: {observation[:2000]}\n"
+                time.sleep(2) # 避免 API 過載
+                
+            except json.JSONDecodeError:
+                logging.error(f"Failed to parse ReAct JSON: {resp}")
+                memory += "\n- Observation: Your last output was not valid JSON. Please try again.\n"
+                
+        # 如果經過 4 步還沒給出最終答案，強制總結
+        if not final_digest:
+            logging.info("⚠️ Max steps reached. Forcing summarization.")
+            sys_p = "You are a research analyst. Summarize the raw observations into a concise intelligence digest."
+            usr_p = f"Event: {query}\n\n[Observations]:\n{memory}\n\nWrite the comprehensive digest."
+            final_digest = agent._call_llm_with_fallback(sys_p, usr_p, json_mode=False, providers=providers_chain) or memory
+            
+        return final_digest
