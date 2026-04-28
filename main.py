@@ -68,10 +68,19 @@ def main():
     # 剔除已經在手上的未平倉單 (避免重複計算 EV 與浪費運算)
     markets = [m for m in all_potential if str(m.get('id', '')) not in open_market_ids]
     
-    logging.info(f"Filtered {len(all_potential)} interesting markets. After excluding already bought ones, {len(markets)} remaining. Processing top 30...")
+    # 過濾同一次 API 回傳中包含相同 question 的重複盤口
+    processed_questions = set()
+    unique_markets = []
+    for m in markets:
+        q = m.get('question', '')
+        if q not in processed_questions:
+            unique_markets.append(m)
+            processed_questions.add(q)
+            
+    logging.info(f"Filtered {len(all_potential)} interesting markets. After excluding already bought ones and duplicates, {len(unique_markets)} remaining. Processing top 30...")
     
     # 3. 推理與印出
-    for idx, row in enumerate(markets[:30]):
+    for idx, row in enumerate(unique_markets[:30]):
         q = row['question']
         cat = row['category']
         
