@@ -108,7 +108,7 @@ class PolyResearcher:
         logging.info(f"🧠 Researcher entering ReAct Loop for: {query}")
         
         # 使用 70B 模型作為情報員的大腦，因為需要極強的 Tool Calling 邏輯能力
-        agent = HermesAgent(model_name="llama-3.3-70b-versatile")
+        agent = HermesAgent(model_name="llama3.1")
         providers_chain = [
             ("groq", "llama-3.3-70b-versatile"),
             ("nvidia", "meta/llama-3.1-70b-instruct"),

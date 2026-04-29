@@ -2,9 +2,7 @@ import requests
 import json
 import logging
 import sqlite3
-import re
 import os
-import random
 import time
 from dotenv import load_dotenv
 
@@ -15,28 +13,28 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class HermesAgent:
     def __init__(self, model_name="hermes", api_url=None):
         self.model_name = model_name
-        
-        # 讀取並解析 API Keys
+
         def get_keys(env_var):
             k = os.getenv(env_var, "")
             return [x.strip() for x in k.split(",") if x.strip()]
-            
+
         self.keys = {
             "ollama": get_keys("OLLAMA_API_KEYS"),
             "nvidia": get_keys("NVIDIA_API_KEYS"),
             "groq": get_keys("GROQ_API_KEYS"),
             "cerebras": get_keys("CEREBRAS_API_KEYS")
         }
-        
+
         self.urls = {
-            "ollama": "https://ollama.com/v1/chat/completions" if self.keys["ollama"] else "http://127.0.0.1:11434/v1/chat/completions",
+            "ollama": "http://127.0.0.1:11434/v1/chat/completions",
             "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
             "groq": "https://api.groq.com/openai/v1/chat/completions",
             "cerebras": "https://api.cerebras.ai/v1/chat/completions"
         }
-        
-        # default local/cloud if specific api_url is provided
+
         self.api_url = api_url
+        # Round-robin index per provider to evenly distribute across API keys
+        self.key_indices = {}
 
     def get_lessons(self, market_category=None):
         rulebook_content = ""
@@ -74,19 +72,38 @@ class HermesAgent:
 
     def build_judge_prompt(self, question, category, context, bull_arg, bear_arg, sentiment_report):
         past_lessons = self.get_lessons(market_category=category)
-        
+
+        # Inject live calibration stats so the Judge can self-correct for known biases
+        calibration_block = ""
+        try:
+            from tracker import PaperTracker
+            stats = PaperTracker().get_calibration_stats(category=category, lookback_n=50)
+            if stats.get("sample_size", 0) >= 5:
+                calibration_block = (
+                    "\n--- YOUR CALIBRATION HISTORY ---\n"
+                    f"Brier Score (last {stats['sample_size']} resolved trades): {stats['brier_score']:.3f} "
+                    f"(0.00=perfect, 0.25=coin flip)\n"
+                    f"Your mean predicted prob: {stats['mean_pred']:.1%} | Actual outcome rate: {stats['mean_actual']:.1%}\n"
+                    f"Systematic bias: {stats['bias_direction']} by {stats['bias_amount']:.1%}\n"
+                    "CRITICAL: Adjust your probability to correct for this bias before outputting.\n"
+                    "-----------------------------------\n"
+                )
+        except Exception:
+            pass
+
         system_prompt = (
             "You are Hermes, the Supreme Judge of prediction markets. "
             "Your task is to review the Bull and Bear arguments regarding the event and declare the final true probability of it occurring. "
             "You must consider current factors based on the context.\n\n"
             "--- PAST LESSONS LEARNED ---\n"
             f"{past_lessons}\n"
-            "----------------------------\n\n"
+            "----------------------------\n"
+            f"{calibration_block}\n"
             "You MUST output your response ONLY in valid JSON format. Do not use Markdown JSON blocks. "
             "The JSON must have exact two keys: 'reasoning' (a brief explanation of your final verdict resolving the debate) and "
             "'probability' (a float between 0.00 and 1.00)."
         )
-        
+
         judge_prompt = (
             f"Question: {question}\n"
             f"Market Category: {category}\n\n"
@@ -98,16 +115,16 @@ class HermesAgent:
             f"As the final Judge, synthesize fact-based contexts and social momentum. Beware of getting swayed by pure social hype if facts contradict it, but DO leverage social momentum (FOMO/FUD) if the event is popularity-based.\n"
             f"End your judgment with the Exact format: 'PROBABILITY: X%'"
         )
-        
+
         return system_prompt, judge_prompt
 
     def _call_llm_with_provider(self, sys_p, usr_p, json_mode=False, provider="ollama", override_model=None):
         url = self.urls.get(provider, self.urls["ollama"])
         keys = self.keys.get(provider, [])
         target_model = override_model if override_model else self.model_name
-        
+
         is_openai = "v1" in url
-        
+
         if is_openai:
             payload = {
                 "model": target_model,
@@ -131,22 +148,37 @@ class HermesAgent:
             }
             if json_mode:
                 payload["format"] = "json"
-            
+
         headers = {"Content-Type": "application/json"}
         if keys:
-            chosen_key = random.choice(keys)
-            headers["Authorization"] = f"Bearer {chosen_key}"
-            
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            if is_openai:
-                return data["choices"][0]["message"]["content"].strip()
-            return data.get("message", {}).get("content", "").strip()
-        except Exception as e:
-            logging.error(f"Error calling {provider} LLM: {e}")
-            return None
+            # Round-robin across API keys to evenly distribute load
+            if provider not in self.key_indices:
+                self.key_indices[provider] = 0
+            idx = self.key_indices[provider] % len(keys)
+            self.key_indices[provider] = idx + 1
+            headers["Authorization"] = f"Bearer {keys[idx]}"
+
+        for attempt in range(3):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                if response.status_code == 429:
+                    wait = (2 ** attempt) * 5  # 5s → 10s → 20s
+                    logging.warning(f"Rate limited by {provider}. Waiting {wait}s (attempt {attempt+1}/3)...")
+                    time.sleep(wait)
+                    continue
+                response.raise_for_status()
+                data = response.json()
+                if is_openai:
+                    return data["choices"][0]["message"]["content"].strip()
+                return data.get("message", {}).get("content", "").strip()
+            except requests.Timeout:
+                logging.warning(f"Timeout on {provider} attempt {attempt+1}/3")
+                time.sleep(2 ** attempt)
+            except Exception as e:
+                logging.error(f"Error calling {provider} LLM: {e}")
+                return None
+
+        return None
 
     def _call_llm_with_fallback(self, sys_p, usr_p, json_mode=False, providers=[]):
         # Fallback mechanism iterating through a list of (provider, model) tuples
