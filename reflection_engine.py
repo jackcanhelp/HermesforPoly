@@ -64,8 +64,8 @@ def check_market_resolution(market_id):
 
 def run_reflection_cycle():
     logging.info("Starting Reflection Cycle...")
-    # 初始化 Tracker 以確保 DB Migration 已執行
-    _ = PaperTracker()
+    # Ensure DB migrations run before we access the schema
+    PaperTracker()
     
     conn = sqlite3.connect("paper_trading.db")
     cursor = conn.cursor()
@@ -104,7 +104,11 @@ def run_reflection_cycle():
             
             # 判斷是否預測正確
             actual_yes = 1 if winner.lower() == 'yes' else 0
-            
+
+            # Record calibration data for Brier score tracking
+            tracker = PaperTracker()
+            tracker.record_resolution(trade_id, actual_yes)
+
             # 使用 LLM 反思
             reflection_prompt = (
                 f"Event: {q}\n"

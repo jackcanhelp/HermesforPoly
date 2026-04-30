@@ -1,21 +1,27 @@
 import sqlite3
 import logging
 import os
-from datetime import datetime
 from agent import HermesAgent
+from tracker import PaperTracker
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def consolidate_memory():
     """定期執行大腦突觸修剪與分類總結 (Meta-Reflection)"""
-    logging.info("Starting Meta-Reflection Memory Consolidation...")
+    tracker = PaperTracker()
+
+    # Only run if there are enough new unconsolidated lessons to justify a 405B API call
+    unconsolidated_count = tracker.get_unconsolidated_lesson_count()
+    if unconsolidated_count < 5:
+        logging.info(f"Meta-Reflection skipped: only {unconsolidated_count} new lessons (need 5+).")
+        return
+
+    logging.info(f"Starting Meta-Reflection Memory Consolidation ({unconsolidated_count} new lessons)...")
     conn = sqlite3.connect("paper_trading.db")
     cursor = conn.cursor()
-    
-    # 這裡我們為了簡單，抓取所有教訓。但在大規模系統中，應該要有一個欄位紀錄 'is_consolidated'
-    # 目前我們抓取最近的 20 條教訓來更新 rulebook
+
     try:
-        cursor.execute("SELECT market_category, lesson FROM lessons_learned ORDER BY id DESC LIMIT 20")
+        cursor.execute("SELECT market_category, lesson FROM lessons_learned WHERE is_consolidated = 0 ORDER BY id DESC LIMIT 20")
         recent_lessons = cursor.fetchall()
     except Exception as e:
         logging.error(f"Error reading lessons: {e}")
@@ -78,6 +84,7 @@ def consolidate_memory():
             with open(rulebook_path, "w", encoding="utf-8") as f:
                 f.write(updated_rulebook)
             logging.info("Master Rulebook successfully updated and saved to master_rulebook.md")
+            tracker.mark_lessons_consolidated()
         else:
             logging.warning("Failed to generate updated rulebook.")
     except Exception as e:
