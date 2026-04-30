@@ -131,13 +131,23 @@ You must output EXACTLY a valid JSON object in the following format at each step
 '''
         
         memory = f"Event Question to Resolve: {query}\nCurrent year: {datetime.now().year}\n\n[Action History]\n"
-        
-        max_steps = 4
+
+        max_steps = 6
         final_digest = ""
-        
+
         for step in range(max_steps):
+            is_last_step = (step == max_steps - 1)
+            is_penultimate = (step == max_steps - 2)
+
+            if is_last_step:
+                step_note = "\n\nURGENT: This is your final step. You MUST use action='FINAL_ANSWER' now and write a comprehensive digest of all findings. Do NOT call any more tools."
+            elif is_penultimate:
+                step_note = "\n\nNote: You have 1 more step after this. Start wrapping up — use FINAL_ANSWER next unless you are missing a critical data point."
+            else:
+                step_note = ""
+
             sys_p = "You are an elite autonomous research agent. Your goal is to gather undeniable facts for a prediction market question. Think step-by-step. " + tools_schema
-            usr_p = memory + "\nWhat is your next step?"
+            usr_p = memory + "\nWhat is your next step?" + step_note
             
             resp = agent._call_llm_with_fallback(sys_p, usr_p, json_mode=True, providers=providers_chain)
             if not resp:
