@@ -4,6 +4,9 @@ import logging
 from datetime import datetime
 from notifier import send_telegram_alert
 
+_DATA_DIR = os.getenv("DATA_DIR", ".")
+_DB_PATH = os.path.join(_DATA_DIR, "paper_trading.db")
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 _STOPWORDS = {
@@ -24,7 +27,8 @@ _STOPWORDS = {
 }
 
 class PaperTracker:
-    def __init__(self, db_path="paper_trading.db"):
+    def __init__(self, db_path=None):
+        db_path = db_path or _DB_PATH
         self.db_path = db_path
         self._init_db()
 

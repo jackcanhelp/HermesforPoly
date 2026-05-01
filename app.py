@@ -2,6 +2,9 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import plotly.express as px
+import os
+
+_DB_PATH = os.path.join(os.getenv("DATA_DIR", "."), "paper_trading.db")
 
 st.set_page_config(page_title="Hermes V4 | Real Bankroll", layout="wide")
 
@@ -9,7 +12,7 @@ st.title("🏛️ Hermes Polymarket 實盤演練室 (Bankroll V4)")
 st.markdown("啟動 **自動深度研究** x **資金水位模擬** 的真實戰場。")
 
 def load_data():
-    conn = sqlite3.connect("paper_trading.db")
+    conn = sqlite3.connect(_DB_PATH)
     try:
         trades_df = pd.read_sql_query("SELECT * FROM paper_trades", conn)
         lessons_df = pd.read_sql_query("SELECT * FROM lessons_learned", conn)

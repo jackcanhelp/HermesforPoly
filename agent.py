@@ -6,6 +6,10 @@ import os
 import time
 from dotenv import load_dotenv
 
+_DATA_DIR = os.getenv("DATA_DIR", ".")
+_DB_PATH = os.path.join(_DATA_DIR, "paper_trading.db")
+_RULEBOOK_PATH = os.path.join(_DATA_DIR, "master_rulebook.md")
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -38,14 +42,14 @@ class HermesAgent:
 
     def get_lessons(self, market_category=None):
         rulebook_content = ""
-        rulebook_path = "master_rulebook.md"
+        rulebook_path = _RULEBOOK_PATH
         if os.path.exists(rulebook_path):
             with open(rulebook_path, "r", encoding="utf-8") as f:
                 rulebook_content = f.read()
 
         recent_lessons = []
         try:
-            conn = sqlite3.connect("paper_trading.db")
+            conn = sqlite3.connect(_DB_PATH)
             cursor = conn.cursor()
             if market_category:
                 # 取得同分類的最近3筆教訓

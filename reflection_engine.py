@@ -2,8 +2,12 @@ import logging
 import sqlite3
 import requests
 import time
+import os
 from agent import HermesAgent
 from tracker import PaperTracker
+
+_DATA_DIR = os.getenv("DATA_DIR", ".")
+_DB_PATH = os.path.join(_DATA_DIR, "paper_trading.db")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -67,7 +71,7 @@ def run_reflection_cycle():
     # Ensure DB migrations run before we access the schema
     PaperTracker()
     
-    conn = sqlite3.connect("paper_trading.db")
+    conn = sqlite3.connect(_DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute("SELECT id, market_id, question, predicted_prob, action, context_at_time, reasoning, trade_size, market_price, last_mtm_prob, market_category FROM paper_trades WHERE status = 'OPEN'")
@@ -187,5 +191,3 @@ if __name__ == "__main__":
     except Exception as e:
         import traceback
         traceback.print_exc()
-    finally:
-        input("\n按下 Enter 鍵結束程式...")

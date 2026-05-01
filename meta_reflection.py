@@ -4,6 +4,10 @@ import os
 from agent import HermesAgent
 from tracker import PaperTracker
 
+_DATA_DIR = os.getenv("DATA_DIR", ".")
+_DB_PATH = os.path.join(_DATA_DIR, "paper_trading.db")
+_RULEBOOK_PATH = os.path.join(_DATA_DIR, "master_rulebook.md")
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def consolidate_memory():
@@ -17,7 +21,7 @@ def consolidate_memory():
         return
 
     logging.info(f"Starting Meta-Reflection Memory Consolidation ({unconsolidated_count} new lessons)...")
-    conn = sqlite3.connect("paper_trading.db")
+    conn = sqlite3.connect(_DB_PATH)
     cursor = conn.cursor()
 
     try:
@@ -42,7 +46,7 @@ def consolidate_memory():
         category_lessons[category].append(lesson)
 
     # 讀取現有的 master_rulebook
-    rulebook_path = "master_rulebook.md"
+    rulebook_path = _RULEBOOK_PATH
     existing_rulebook = ""
     if os.path.exists(rulebook_path):
         with open(rulebook_path, "r", encoding="utf-8") as f:

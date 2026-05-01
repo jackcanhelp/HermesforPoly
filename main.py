@@ -172,5 +172,3 @@ if __name__ == "__main__":
         daemon_loop()
     except KeyboardInterrupt:
         logging.info("使用者強制停止。")
-    finally:
-        input("\n按下 Enter 鍵結束程式...")
