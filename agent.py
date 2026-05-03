@@ -74,7 +74,7 @@ class HermesAgent:
             
         return final_context
 
-    def build_judge_prompt(self, question, category, context, bull_arg, bear_arg, sentiment_report, market_yes_price=None):
+    def build_judge_prompt(self, question, category, context, bull_arg, bear_arg, sentiment_report, current_date=None, days_left=None):
         past_lessons = self.get_lessons(market_category=category)
 
         # Inject live calibration stats so the Judge can self-correct for known biases
@@ -108,25 +108,15 @@ class HermesAgent:
             "'probability' (a float between 0.00 and 1.00)."
         )
 
-        if market_yes_price is not None:
-            market_anchor = (
-                f"\n--- MARKET CALIBRATION ANCHOR ---\n"
-                f"Current Polymarket crowd consensus for YES: {market_yes_price*100:.1f}%\n"
-                f"This price reflects thousands of informed traders. Only deviate significantly "
-                f"if your evidence is CONCRETE and the market is clearly wrong. "
-                f"When uncertain, stay close to {market_yes_price*100:.1f}%.\n"
-                f"IMPORTANT: If the Bear argument and evidence strongly suggest this event WILL NOT happen, "
-                f"do NOT hesitate to give a probability BELOW {market_yes_price*100:.1f}%. "
-                f"Being bearish when the facts support it is just as valid as being bullish.\n"
-                f"----------------------------------\n\n"
-            )
+        if current_date and days_left is not None:
+            time_context = f"Current Date: {current_date}\nDays until resolution: {days_left} days\n"
         else:
-            market_anchor = ""
+            time_context = ""
 
         judge_prompt = (
             f"Question: {question}\n"
             f"Market Category: {category}\n\n"
-            f"{market_anchor}"
+            f"{time_context}"
             f"News/Facts Context:\n{context}\n\n"
             f"Reddit/Social Crowd Sentiment:\n{sentiment_report}\n\n"
             f"Past Lessons Learned (AVOID THESE MISTAKES):\n{past_lessons}\n\n"
@@ -244,7 +234,7 @@ class HermesAgent:
         result = self._call_llm_with_fallback(sys_prompt, prompt, json_mode=False, providers=providers_chain)
         return result if result else "[NEUTRAL/MIXED] Failed to analyze sentiment."
 
-    def analyze_event_debate(self, question, category, context, sentiment_report="", market_yes_price=None):
+    def analyze_event_debate(self, question, category, context, sentiment_report="", current_date=None, days_left=None):
         logging.info(f"Initiating Debate for: {question}")
         
         # Routing strategy for Bull/Bear (Intelligence-focused 70B)
@@ -258,13 +248,13 @@ class HermesAgent:
         # 1. Bull Agent
         logging.info(">> Bull Agent is arguing for YES...")
         bull_sys = "You are a bullish analyst. Provide exactly one strong paragraph arguing WHY this event WILL happen. Do not argue both sides."
-        bull_usr = f"Context:\n{context}\n\nEvent: {question}"
+        bull_usr = f"Current Date: {current_date}\nDays until resolution: {days_left}\n\nContext:\n{context}\n\nSocial Sentiment:\n{sentiment_report}\n\nEvent: {question}"
         bull_arg = self._call_llm_with_fallback(bull_sys, bull_usr, json_mode=False, providers=debate_chain) or "No strong bullish argument generated."
         
         # 2. Bear Agent
         logging.info(">> Bear Agent is arguing for NO...")
         bear_sys = "You are a bearish analyst. Provide exactly one strong paragraph arguing WHY this event WILL NOT happen. Do not argue both sides."
-        bear_usr = f"Context:\n{context}\n\nEvent: {question}"
+        bear_usr = f"Current Date: {current_date}\nDays until resolution: {days_left}\n\nContext:\n{context}\n\nSocial Sentiment:\n{sentiment_report}\n\nEvent: {question}"
         bear_arg = self._call_llm_with_fallback(bear_sys, bear_usr, json_mode=False, providers=debate_chain) or "No strong bearish argument generated."
         
         # Routing strategy for Judge (Supreme-focused 405B)
@@ -276,7 +266,7 @@ class HermesAgent:
         
         # 3. Judge Agent
         logging.info(">> Judge Agent is evaluating the debate...")
-        sys_p, usr_p = self.build_judge_prompt(question, category, context, bull_arg, bear_arg, sentiment_report, market_yes_price)
+        sys_p, usr_p = self.build_judge_prompt(question, category, context, bull_arg, bear_arg, sentiment_report, current_date, days_left)
         
         content = self._call_llm_with_fallback(sys_p, usr_p, json_mode=True, providers=judge_chain)
         if not content: return None
@@ -294,7 +284,7 @@ class HermesAgent:
 if __name__ == "__main__":
     agent = HermesAgent(model_name="llama3.1")
     test_q = "Will Apple acquire Tesla before 2026?"
-    res = agent.analyze_event_debate(test_q, "Business/Tech", "Tesla stocks are booming, Apple has lots of cash.", "[MILDLY POSITIVE]")
+    res = agent.analyze_event_debate(test_q, "Business/Tech", "Tesla stocks are booming, Apple has lots of cash.", "[MILDLY POSITIVE]", "2026-01-01", 365)
     if res:
         print("\nAgent Analysis Result:")
         print(f"Reasoning:\n{res['reasoning']}")

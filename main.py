@@ -112,9 +112,19 @@ def main():
             continue
 
         print(">> Hermes is analyzing via Debate & Sentiment...")
-        yes_idx = next((i for i, o in enumerate(outcomes) if isinstance(o, str) and o.lower() == 'yes'), 0)
-        market_yes_price = float(prices[yes_idx]) if prices else 0.5
-        result = judge_agent.analyze_event_debate(q, cat, context, sentiment_report, market_yes_price)
+        
+        now_time = datetime.now(timezone.utc)
+        current_date_str = now_time.strftime("%Y-%m-%d")
+        end_date_val = row.get('endDate')
+        days_left_val = "Unknown"
+        import pandas as pd
+        if end_date_val is not None and pd.notna(end_date_val):
+            try:
+                days_left_val = (end_date_val - now_time).days
+            except Exception:
+                pass
+                
+        result = judge_agent.analyze_event_debate(q, cat, context, sentiment_report, current_date_str, days_left_val)
 
         if result:
             true_prob = float(result.get('probability', 0))

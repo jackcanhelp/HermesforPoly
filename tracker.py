@@ -287,7 +287,7 @@ class PaperTracker:
             logging.error(f"Error marking lessons consolidated: {e}")
 
     def evaluate_and_log(self, market_id, question, predicted_prob, prices, outcomes, context, reasoning,
-                         category="Unknown", edge_threshold=0.05, kelly_multiplier=0.25, cluster_count=1):
+                         category="Unknown", edge_threshold=0.05, kelly_multiplier=0.25, cluster_count=1, roi_threshold=0.10):
         if not prices or len(prices) == 0:
             return
 
@@ -308,14 +308,17 @@ class PaperTracker:
             ev = 0.0
             price_paid = 0.0
             f = 0
+            
+            roi_yes = (ev_yes / market_price) if market_price > 0 else 0
+            roi_no = (ev_no / (1 - market_price)) if (1 - market_price) > 0 else 0
 
-            if ev_yes > edge_threshold:
+            if ev_yes > edge_threshold and roi_yes > roi_threshold:
                 action = "BUY YES"
                 ev = ev_yes
                 price_paid = market_price
                 f = (predicted_prob - market_price) / (1 - market_price) if market_price < 1 else 0
 
-            elif ev_no > edge_threshold:
+            elif ev_no > edge_threshold and roi_no > roi_threshold:
                 action = "BUY NO"
                 ev = ev_no
                 price_paid = 1 - market_price
@@ -328,10 +331,10 @@ class PaperTracker:
             fractional_kelly = min(max(f * effective_multiplier, 0.0), 0.15)
 
             if action:
-                logging.info(f"*** FOUND EDGE! Action: {action} on [{question}] | EV: {ev:.3f} | Kelly: {fractional_kelly*100:.1f}% (cluster_count={cluster_count}) ***")
+                logging.info(f"*** FOUND EDGE! Action: {action} on [{question}] | EV: {ev:.3f} | ROI: {ev/price_paid*100:.1f}% | Kelly: {fractional_kelly*100:.1f}% (cluster_count={cluster_count}) ***")
                 self._log_trade(market_id, question, predicted_prob, price_paid, action, ev, context, reasoning, category, fractional_kelly)
             else:
-                logging.info(f"No sufficient edge. EV_Yes: {ev_yes:.3f}, EV_No: {ev_no:.3f}")
+                logging.info(f"No sufficient edge/ROI. EV_Yes: {ev_yes:.3f} (ROI: {roi_yes*100:.1f}%), EV_No: {ev_no:.3f} (ROI: {roi_no*100:.1f}%)")
 
         except Exception as e:
             logging.error(f"Failed to evaluate market EV: {e}")
