@@ -14,7 +14,11 @@ def fetch_active_markets(limit=50):
         "ascending": "false"  # Get highest volume first
     }
     print(f"Fetching active markets from {url}...")
-    response = requests.get(url, params=params)
+    try:
+        response = requests.get(url, params=params, timeout=15)
+    except requests.exceptions.RequestException as e:
+        print(f"Error connecting to Polymarket API: {e}")
+        return None
     
     if response.status_code == 200:
         data = response.json()

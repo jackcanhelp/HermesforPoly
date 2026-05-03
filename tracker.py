@@ -22,8 +22,8 @@ _STOPWORDS = {
     "january", "february", "march", "april", "june", "july", "august",
     "september", "october", "november", "december",
     # Generic prediction market boilerplate
-    "least", "least", "market", "price", "event", "happen", "occur",
-    "reach", "least", "total", "least", "united", "states", "least",
+    "market", "price", "event", "happen", "occur",
+    "reach", "total", "united", "states", "least",
 }
 
 class PaperTracker:

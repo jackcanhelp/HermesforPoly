@@ -75,7 +75,7 @@ def consolidate_memory():
         f"Please output ONLY the updated Master Rulebook in Markdown format. Start immediately with '# Hermes Master Rulebook'."
     )
 
-    agent = HermesAgent(model_name="meta/llama-3.1-405b-instruct")
+    agent = HermesAgent(model_name="llama3.1")
     providers_chain = [
         ("nvidia", "meta/llama-3.1-405b-instruct"),
         ("groq", "llama-3.3-70b-versatile"),

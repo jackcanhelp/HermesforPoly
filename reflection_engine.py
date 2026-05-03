@@ -77,7 +77,7 @@ def run_reflection_cycle():
     cursor.execute("SELECT id, market_id, question, predicted_prob, action, context_at_time, reasoning, trade_size, market_price, last_mtm_prob, market_category FROM paper_trades WHERE status = 'OPEN'")
     open_trades = cursor.fetchall()
     # 使用 Llama 3.1 405B 作為終審與反思法官 (NVIDIA NIM API)
-    agent = HermesAgent(model_name="meta/llama-3.1-405b-instruct") 
+    agent = HermesAgent(model_name="llama3.1")
     for trade in open_trades:
         trade_id, m_id, q, prob, action, ctx, reason, trade_size, price_paid, last_mtm_prob, market_category = trade
         
