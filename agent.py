@@ -115,6 +115,9 @@ class HermesAgent:
                 f"This price reflects thousands of informed traders. Only deviate significantly "
                 f"if your evidence is CONCRETE and the market is clearly wrong. "
                 f"When uncertain, stay close to {market_yes_price*100:.1f}%.\n"
+                f"IMPORTANT: If the Bear argument and evidence strongly suggest this event WILL NOT happen, "
+                f"do NOT hesitate to give a probability BELOW {market_yes_price*100:.1f}%. "
+                f"Being bearish when the facts support it is just as valid as being bullish.\n"
                 f"----------------------------------\n\n"
             )
         else:
