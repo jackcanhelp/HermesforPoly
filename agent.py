@@ -74,7 +74,7 @@ class HermesAgent:
             
         return final_context
 
-    def build_judge_prompt(self, question, category, context, bull_arg, bear_arg, sentiment_report):
+    def build_judge_prompt(self, question, category, context, bull_arg, bear_arg, sentiment_report, market_yes_price=None):
         past_lessons = self.get_lessons(market_category=category)
 
         # Inject live calibration stats so the Judge can self-correct for known biases
@@ -108,16 +108,29 @@ class HermesAgent:
             "'probability' (a float between 0.00 and 1.00)."
         )
 
+        if market_yes_price is not None:
+            market_anchor = (
+                f"\n--- MARKET CALIBRATION ANCHOR ---\n"
+                f"Current Polymarket crowd consensus for YES: {market_yes_price*100:.1f}%\n"
+                f"This price reflects thousands of informed traders. Only deviate significantly "
+                f"if your evidence is CONCRETE and the market is clearly wrong. "
+                f"When uncertain, stay close to {market_yes_price*100:.1f}%.\n"
+                f"----------------------------------\n\n"
+            )
+        else:
+            market_anchor = ""
+
         judge_prompt = (
             f"Question: {question}\n"
             f"Market Category: {category}\n\n"
+            f"{market_anchor}"
             f"News/Facts Context:\n{context}\n\n"
             f"Reddit/Social Crowd Sentiment:\n{sentiment_report}\n\n"
             f"Past Lessons Learned (AVOID THESE MISTAKES):\n{past_lessons}\n\n"
             f"Bull Agent (Argues FOR Yes):\n{bull_arg}\n\n"
             f"Bear Agent (Argues AGAINST Yes):\n{bear_arg}\n\n"
-            f"As the final Judge, synthesize fact-based contexts and social momentum. Beware of getting swayed by pure social hype if facts contradict it, but DO leverage social momentum (FOMO/FUD) if the event is popularity-based.\n"
-            f"End your judgment with the Exact format: 'PROBABILITY: X%'"
+            f"As the final Judge, synthesize all evidence above. Beware of getting swayed by pure social hype if facts contradict it, but DO leverage social momentum if the event is popularity-based. "
+            f"Output your verdict as valid JSON only."
         )
 
         return system_prompt, judge_prompt
@@ -228,7 +241,7 @@ class HermesAgent:
         result = self._call_llm_with_fallback(sys_prompt, prompt, json_mode=False, providers=providers_chain)
         return result if result else "[NEUTRAL/MIXED] Failed to analyze sentiment."
 
-    def analyze_event_debate(self, question, category, context, sentiment_report=""):
+    def analyze_event_debate(self, question, category, context, sentiment_report="", market_yes_price=None):
         logging.info(f"Initiating Debate for: {question}")
         
         # Routing strategy for Bull/Bear (Intelligence-focused 70B)
@@ -260,7 +273,7 @@ class HermesAgent:
         
         # 3. Judge Agent
         logging.info(">> Judge Agent is evaluating the debate...")
-        sys_p, usr_p = self.build_judge_prompt(question, category, context, bull_arg, bear_arg, sentiment_report)
+        sys_p, usr_p = self.build_judge_prompt(question, category, context, bull_arg, bear_arg, sentiment_report, market_yes_price)
         
         content = self._call_llm_with_fallback(sys_p, usr_p, json_mode=True, providers=judge_chain)
         if not content: return None

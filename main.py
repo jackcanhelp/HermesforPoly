@@ -112,7 +112,9 @@ def main():
             continue
 
         print(">> Hermes is analyzing via Debate & Sentiment...")
-        result = judge_agent.analyze_event_debate(q, cat, context, sentiment_report)
+        yes_idx = next((i for i, o in enumerate(outcomes) if isinstance(o, str) and o.lower() == 'yes'), 0)
+        market_yes_price = float(prices[yes_idx]) if prices else 0.5
+        result = judge_agent.analyze_event_debate(q, cat, context, sentiment_report, market_yes_price)
 
         if result:
             true_prob = float(result.get('probability', 0))
