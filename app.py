@@ -93,7 +93,14 @@ else:
     with col_right:
         st.subheader("💰 已結算戰果 (Closed PnL)")
         if not closed_trades.empty:
-            closed_show = closed_trades[['question', 'action', 'trade_size', 'realized_pnl']].sort_values(by='realized_pnl', ascending=False)
+            sort_option = st.selectbox("排序方式", ["結算獲利 (高->低)", "下注時間 (新->舊)", "下注時間 (舊->新)"], key="sort_closed")
+            if sort_option == "結算獲利 (高->低)":
+                closed_show = closed_trades[['timestamp', 'question', 'action', 'trade_size', 'realized_pnl']].sort_values(by='realized_pnl', ascending=False)
+            elif sort_option == "下注時間 (新->舊)":
+                closed_show = closed_trades[['timestamp', 'question', 'action', 'trade_size', 'realized_pnl']].sort_values(by='timestamp', ascending=False)
+            else:
+                closed_show = closed_trades[['timestamp', 'question', 'action', 'trade_size', 'realized_pnl']].sort_values(by='timestamp', ascending=True)
+            
             st.dataframe(closed_show, use_container_width=True)
         else:
             st.write("尚未有任何 14 天內的短線事件滿足結算條件。")

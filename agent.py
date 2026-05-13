@@ -14,6 +14,62 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+class ModelDiscovery:
+    _cache = {}
+
+    @classmethod
+    def get_available_models(cls, provider, base_url, keys):
+        if provider in cls._cache:
+            return cls._cache[provider]
+        
+        if not keys:
+            cls._cache[provider] = []
+            return []
+            
+        models_url = base_url.replace("/chat/completions", "/models")
+        headers = {"Authorization": f"Bearer {keys[0]}"}
+        
+        try:
+            r = requests.get(models_url, headers=headers, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                models = [m["id"] for m in data.get("data", [])]
+                cls._cache[provider] = models
+                return models
+        except Exception as e:
+            logging.warning(f"Failed to fetch models for {provider}: {e}")
+            
+        cls._cache[provider] = []
+        return []
+
+    @classmethod
+    def find_best_model(cls, provider, available_models, intent="speed"):
+        if not available_models:
+            return None
+            
+        priorities = []
+        if provider == "groq":
+            if intent == "speed": priorities = ["llama-3.1-8b-instant", "llama3-8b"]
+            elif intent == "reasoning": priorities = ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama3-70b"]
+            elif intent == "supreme": priorities = ["llama-3.3-70b-versatile"]
+        elif provider == "nvidia":
+            if intent == "speed": priorities = ["meta/llama-3.1-8b-instruct"]
+            elif intent == "reasoning": priorities = ["meta/llama-3.3-70b-instruct", "meta/llama-3.1-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"]
+            elif intent == "supreme": priorities = ["meta/llama-3.1-405b-instruct", "meta/llama-3.3-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"]
+        elif provider == "cerebras":
+            if intent == "speed": priorities = ["llama3.1-8b"]
+            elif intent == "reasoning": priorities = ["llama3.1-70b", "llama3.1-8b"]
+            
+        for p in priorities:
+            if p in available_models:
+                return p
+                
+        llama_models = [m for m in available_models if "llama" in m.lower()]
+        if llama_models:
+            return llama_models[0]
+        return available_models[0] if available_models else None
+
+
 class HermesAgent:
     def __init__(self, model_name="hermes", api_url=None):
         self.model_name = model_name
@@ -40,6 +96,17 @@ class HermesAgent:
         # Round-robin index per provider to evenly distribute across API keys
         self.key_indices = {}
 
+        # --- Dynamic Model Discovery ---
+        self.dynamic_models = {"speed": {}, "reasoning": {}, "supreme": {}}
+        for provider in ["groq", "nvidia", "cerebras"]:
+            if self.keys.get(provider):
+                avail = ModelDiscovery.get_available_models(provider, self.urls[provider], self.keys[provider])
+                if avail:
+                    self.dynamic_models["speed"][provider] = ModelDiscovery.find_best_model(provider, avail, "speed")
+                    self.dynamic_models["reasoning"][provider] = ModelDiscovery.find_best_model(provider, avail, "reasoning")
+                    self.dynamic_models["supreme"][provider] = ModelDiscovery.find_best_model(provider, avail, "supreme")
+
+
     def get_lessons(self, market_category=None):
         rulebook_content = ""
         rulebook_path = _RULEBOOK_PATH
@@ -64,13 +131,13 @@ class HermesAgent:
             logging.error(f"Error fetching lessons: {e}")
 
         final_context = ""
-        if rulebook_content:
-            final_context += f"[Hermes Master Rulebook]\n{rulebook_content}\n\n"
+        # 停用整份 Master Rulebook 的無條件載入，避免 LLM Overfitting (上下文污染)
+        # 改為僅使用精準匹配 category 的最近 3 筆教訓
         if recent_lessons:
             final_context += "[Recent Contextual Lessons]\n" + "\n".join(recent_lessons)
             
         if not final_context:
-            return "No past lessons or rulebook available yet."
+            return "No specific contextual lessons available."
             
         return final_context
 
@@ -224,12 +291,11 @@ class HermesAgent:
         )
         
         # Routing strategy for Sentiment (Speed-focused 8B)
-        providers_chain = [
-            ("cerebras", "llama3.1-8b"),
-            ("groq", "llama-3.1-8b-instant"),
-            ("nvidia", "meta/llama-3.1-8b-instruct"),
-            ("ollama", self.model_name)
-        ]
+        providers_chain = []
+        for p in ["cerebras", "groq", "nvidia"]:
+            if self.dynamic_models["speed"].get(p):
+                providers_chain.append((p, self.dynamic_models["speed"][p]))
+        providers_chain.append(("ollama", self.model_name))
         
         result = self._call_llm_with_fallback(sys_prompt, prompt, json_mode=False, providers=providers_chain)
         return result if result else "[NEUTRAL/MIXED] Failed to analyze sentiment."
@@ -238,12 +304,11 @@ class HermesAgent:
         logging.info(f"Initiating Debate for: {question}")
         
         # Routing strategy for Bull/Bear (Intelligence-focused 70B)
-        debate_chain = [
-            ("groq", "llama-3.3-70b-versatile"),
-            ("nvidia", "meta/llama-3.1-70b-instruct"),
-            ("cerebras", "llama3.1-8b"), # Cerebras currently doesn't offer 70b on free tier
-            ("ollama", self.model_name)
-        ]
+        debate_chain = []
+        for p in ["groq", "nvidia", "cerebras"]:
+            if self.dynamic_models["reasoning"].get(p):
+                debate_chain.append((p, self.dynamic_models["reasoning"][p]))
+        debate_chain.append(("ollama", self.model_name))
         
         # 1. Bull Agent
         logging.info(">> Bull Agent is arguing for YES...")
@@ -258,11 +323,11 @@ class HermesAgent:
         bear_arg = self._call_llm_with_fallback(bear_sys, bear_usr, json_mode=False, providers=debate_chain) or "No strong bearish argument generated."
         
         # Routing strategy for Judge (Supreme-focused 405B)
-        judge_chain = [
-            ("nvidia", "meta/llama-3.1-405b-instruct"),
-            ("groq", "llama-3.3-70b-versatile"), # Groq fallback if 405b fails
-            ("ollama", self.model_name)
-        ]
+        judge_chain = []
+        for p in ["nvidia", "groq"]:
+            if self.dynamic_models["supreme"].get(p):
+                judge_chain.append((p, self.dynamic_models["supreme"][p]))
+        judge_chain.append(("ollama", self.model_name))
         
         # 3. Judge Agent
         logging.info(">> Judge Agent is evaluating the debate...")
