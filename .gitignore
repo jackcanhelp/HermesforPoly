@@ -19,3 +19,6 @@ __pycache__/
 # Logs
 *.log
 run_log.txt
+
+# Scratch / throwaway diagnostic scripts
+scratch_*.py

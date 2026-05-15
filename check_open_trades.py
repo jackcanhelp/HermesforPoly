@@ -3,7 +3,7 @@ import requests
 import json
 import os
 
-db_path = "d:\\Projects\\HermesforPolymarket\\paper_trading.db"
+db_path = os.path.join(os.getenv("DATA_DIR", "."), "paper_trading.db")
 
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
@@ -20,18 +20,22 @@ for trade_id, m_id, q in open_trades:
             m = r.json()
             is_closed = m.get("closed")
             active = m.get("active")
-            
+
             prices = m.get('outcomePrices', [])
             if isinstance(prices, str):
-                try: prices = json.loads(prices)
-                except: pass
-            
+                try:
+                    prices = json.loads(prices)
+                except Exception:
+                    pass
+
             print(f"[{m_id}] {q[:50]}")
             print(f"  Keys indicating status: closed={is_closed}, active={active}")
             for k in ["resolvedBy", "conditionId", "questionID", "status", "hasResolved"]:
                 if k in m:
                     print(f"  {k} = {m[k]}")
+        else:
+            print(f"[{m_id}] HTTP {r.status_code}")
     except Exception as e:
-        pass
+        print(f"[{m_id}] Request failed: {e}")
 
 conn.close()

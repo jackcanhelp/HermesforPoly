@@ -1,5 +1,8 @@
 import sqlite3
-db_path = "d:\\Projects\\HermesforPolymarket\\paper_trading.db"
+import os
+
+db_path = os.path.join(os.getenv("DATA_DIR", "."), "paper_trading.db")
+
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 cursor.execute("SELECT category, COUNT(*) FROM lessons_learned GROUP BY category")

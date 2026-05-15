@@ -3,6 +3,7 @@ import logging
 from collections import Counter
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+import pandas as pd
 from poly_scanner import fetch_active_markets
 from researcher import PolyResearcher
 from agent import HermesAgent
@@ -117,7 +118,6 @@ def main():
         current_date_str = now_time.strftime("%Y-%m-%d")
         end_date_val = row.get('endDate')
         days_left_val = "Unknown"
-        import pandas as pd
         if end_date_val is not None and pd.notna(end_date_val):
             try:
                 days_left_val = (end_date_val - now_time).days
