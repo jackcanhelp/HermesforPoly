@@ -19,11 +19,13 @@ def filter_potential_markets(df):
     for _, row in df.iterrows():
         end_date = row.get('endDate')
         if end_date is not None:
-            import pandas as pd
             if pd.notna(end_date):
-                days_to_end = (end_date - now).days
-                if days_to_end > 14 or days_to_end < 0:
-                    continue
+                try:
+                    days_to_end = (end_date - now).days
+                    if days_to_end > 14 or days_to_end < 0:
+                        continue
+                except Exception:
+                    pass
 
         outcomes = row.get('outcomes', [])
         if not isinstance(outcomes, list) or len(outcomes) != 2:
@@ -37,11 +39,14 @@ def filter_potential_markets(df):
             try:
                 if 0.05 < float(p) < 0.95:
                     is_interesting = True
-            except:
+            except (ValueError, TypeError):
                 pass
 
-        if is_interesting and float(row.get('liquidity', 0)) > 100:
-            potential_markets.append(row)
+        try:
+            if is_interesting and float(row.get('liquidity', 0)) > 100:
+                potential_markets.append(row)
+        except (ValueError, TypeError):
+            pass
 
     return potential_markets
 
@@ -121,8 +126,8 @@ def main():
         if end_date_val is not None and pd.notna(end_date_val):
             try:
                 days_left_val = (end_date_val - now_time).days
-            except Exception:
-                pass
+            except Exception as e:
+                logging.debug(f"Failed to calculate days_left for market: {e}")
                 
         result = judge_agent.analyze_event_debate(q, cat, context, sentiment_report, current_date_str, days_left_val)
 

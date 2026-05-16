@@ -1,6 +1,7 @@
 import requests
 import pandas as pd
 import time
+import json
 
 GAMMA_API_URL = "https://gamma-api.polymarket.com"
 
@@ -33,18 +34,16 @@ def fetch_active_markets(limit=50):
                 # Sometims outcomes are directly in the market dict
                 outcomes = m.get('outcomes', [])
                 if isinstance(outcomes, str):
-                    import json
                     try:
                         outcomes = json.loads(outcomes)
-                    except:
+                    except json.JSONDecodeError:
                         pass
                 
                 prices = m.get('outcomePrices', [])
                 if isinstance(prices, str):
-                    import json
                     try:
                         prices = json.loads(prices)
-                    except:
+                    except json.JSONDecodeError:
                         pass
                 
                 markets.append({
@@ -91,11 +90,14 @@ if __name__ == "__main__":
                     price_val = float(p)
                     if 0.05 < price_val < 0.95:
                         is_interesting = True
-                except:
+                except (ValueError, TypeError):
                     pass
             
-            if is_interesting and float(row['liquidity']) > 1000:
-                potential_markets.append(row)
+            try:
+                if is_interesting and float(row['liquidity']) > 1000:
+                    potential_markets.append(row)
+            except (ValueError, TypeError):
+                pass
                 
         print(f"從 100 個熱門市場中，篩選出 {len(potential_markets)} 個具分析價值的目標：\n")
         

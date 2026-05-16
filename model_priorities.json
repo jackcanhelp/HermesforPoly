@@ -1,0 +1,17 @@
+{
+  "groq": {
+    "speed": ["llama-3.1-8b-instant", "llama3-8b"],
+    "reasoning": ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama3-70b"],
+    "supreme": ["llama-3.3-70b-versatile"]
+  },
+  "nvidia": {
+    "speed": ["meta/llama-3.1-8b-instruct"],
+    "reasoning": ["meta/llama-3.3-70b-instruct", "meta/llama-3.1-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"],
+    "supreme": ["meta/llama-3.1-405b-instruct", "meta/llama-3.3-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"]
+  },
+  "cerebras": {
+    "speed": ["llama3.1-8b"],
+    "reasoning": ["llama3.1-70b", "llama3.1-8b"],
+    "supreme": []
+  }
+}

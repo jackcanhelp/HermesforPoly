@@ -16,6 +16,19 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 class ModelDiscovery:
     _cache = {}
+    _model_priorities = None
+
+    @classmethod
+    def _get_priorities(cls):
+        if cls._model_priorities is None:
+            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_priorities.json")
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cls._model_priorities = json.load(f)
+            except Exception as e:
+                logging.error(f"Failed to load model priorities: {e}")
+                cls._model_priorities = {}
+        return cls._model_priorities
 
     @classmethod
     def get_available_models(cls, provider, base_url, keys):
@@ -47,18 +60,8 @@ class ModelDiscovery:
         if not available_models:
             return None
             
-        priorities = []
-        if provider == "groq":
-            if intent == "speed": priorities = ["llama-3.1-8b-instant", "llama3-8b"]
-            elif intent == "reasoning": priorities = ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama3-70b"]
-            elif intent == "supreme": priorities = ["llama-3.3-70b-versatile"]
-        elif provider == "nvidia":
-            if intent == "speed": priorities = ["meta/llama-3.1-8b-instruct"]
-            elif intent == "reasoning": priorities = ["meta/llama-3.3-70b-instruct", "meta/llama-3.1-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"]
-            elif intent == "supreme": priorities = ["meta/llama-3.1-405b-instruct", "meta/llama-3.3-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"]
-        elif provider == "cerebras":
-            if intent == "speed": priorities = ["llama3.1-8b"]
-            elif intent == "reasoning": priorities = ["llama3.1-70b", "llama3.1-8b"]
+        priorities_config = cls._get_priorities()
+        priorities = priorities_config.get(provider, {}).get(intent, [])
             
         for p in priorities:
             if p in available_models:
@@ -68,7 +71,6 @@ class ModelDiscovery:
         if llama_models:
             return llama_models[0]
         return available_models[0] if available_models else None
-
 
 class HermesAgent:
     def __init__(self, model_name="hermes", api_url=None):
@@ -116,17 +118,16 @@ class HermesAgent:
 
         recent_lessons = []
         try:
-            conn = sqlite3.connect(_DB_PATH)
-            cursor = conn.cursor()
-            if market_category:
-                # 取得同分類的最近3筆教訓
-                cursor.execute("SELECT lesson FROM lessons_learned WHERE market_category = ? ORDER BY id DESC LIMIT 3", (market_category,))
-            else:
-                cursor.execute("SELECT lesson FROM lessons_learned ORDER BY id DESC LIMIT 3")
-            records = cursor.fetchall()
-            conn.close()
-            if records:
-                recent_lessons = [f"- {r[0]}" for r in records]
+            with sqlite3.connect(_DB_PATH) as conn:
+                cursor = conn.cursor()
+                if market_category:
+                    # 取得同分類的最近3筆教訓
+                    cursor.execute("SELECT lesson FROM lessons_learned WHERE market_category = ? ORDER BY id DESC LIMIT 3", (market_category,))
+                else:
+                    cursor.execute("SELECT lesson FROM lessons_learned ORDER BY id DESC LIMIT 3")
+                records = cursor.fetchall()
+                if records:
+                    recent_lessons = [f"- {r[0]}" for r in records]
         except Exception as e:
             logging.error(f"Error fetching lessons: {e}")
 
@@ -159,8 +160,8 @@ class HermesAgent:
                     "CRITICAL: Adjust your probability to correct for this bias before outputting.\n"
                     "-----------------------------------\n"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug(f"Failed to fetch calibration stats for judge prompt: {e}")
 
         system_prompt = (
             "You are Hermes, the Supreme Judge of prediction markets. "

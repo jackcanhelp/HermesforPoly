@@ -33,93 +33,89 @@ class PaperTracker:
         self._init_db()
 
     def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS paper_trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                market_id TEXT,
-                question TEXT,
-                predicted_prob REAL,
-                market_price REAL,
-                action TEXT,
-                ev REAL,
-                status TEXT,
-                context_at_time TEXT,
-                reasoning TEXT,
-                kelly_fraction REAL,
-                trade_size REAL DEFAULT 0.0,
-                realized_pnl REAL DEFAULT 0.0
-            )
-        ''')
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS paper_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    market_id TEXT,
+                    question TEXT,
+                    predicted_prob REAL,
+                    market_price REAL,
+                    action TEXT,
+                    ev REAL,
+                    status TEXT,
+                    context_at_time TEXT,
+                    reasoning TEXT,
+                    kelly_fraction REAL,
+                    trade_size REAL DEFAULT 0.0,
+                    realized_pnl REAL DEFAULT 0.0
+                )
+            ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS portfolio (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                balance REAL,
-                total_equity REAL DEFAULT 10000.0
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS portfolio (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    balance REAL,
+                    total_equity REAL DEFAULT 10000.0
+                )
+            ''')
 
-        cursor.execute("SELECT COUNT(*) FROM portfolio")
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO portfolio (timestamp, balance, total_equity) VALUES (?, ?, ?)", (datetime.now().isoformat(), 10000.0, 10000.0))
+            cursor.execute("SELECT COUNT(*) FROM portfolio")
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("INSERT INTO portfolio (timestamp, balance, total_equity) VALUES (?, ?, ?)", (datetime.now().isoformat(), 10000.0, 10000.0))
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS lessons_learned (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                category TEXT,
-                lesson TEXT
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS lessons_learned (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    category TEXT,
+                    lesson TEXT
+                )
+            ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS calibration_data (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                market_id TEXT,
-                question TEXT,
-                predicted_prob REAL,
-                market_price REAL,
-                resolved_outcome INTEGER,
-                brier_contribution REAL,
-                category TEXT
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS calibration_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    market_id TEXT,
+                    question TEXT,
+                    predicted_prob REAL,
+                    market_price REAL,
+                    resolved_outcome INTEGER,
+                    brier_contribution REAL,
+                    category TEXT
+                )
+            ''')
 
-        # Migrations
-        migrations = [
-            "ALTER TABLE portfolio ADD COLUMN total_equity REAL DEFAULT 10000.0",
-            "ALTER TABLE paper_trades ADD COLUMN context_at_time TEXT",
-            "ALTER TABLE paper_trades ADD COLUMN reasoning TEXT",
-            "ALTER TABLE paper_trades ADD COLUMN kelly_fraction REAL DEFAULT 0.0",
-            "ALTER TABLE paper_trades ADD COLUMN trade_size REAL DEFAULT 0.0",
-            "ALTER TABLE paper_trades ADD COLUMN realized_pnl REAL DEFAULT 0.0",
-            "ALTER TABLE paper_trades ADD COLUMN last_mtm_prob REAL DEFAULT NULL",
-            "ALTER TABLE paper_trades ADD COLUMN market_category TEXT",
-            "ALTER TABLE lessons_learned ADD COLUMN market_category TEXT",
-            "ALTER TABLE lessons_learned ADD COLUMN is_consolidated INTEGER DEFAULT 0",
-        ]
-        for sql in migrations:
-            try:
-                cursor.execute(sql)
-            except sqlite3.OperationalError:
-                pass
-
-        conn.commit()
-        conn.close()
+            # Migrations
+            migrations = [
+                "ALTER TABLE portfolio ADD COLUMN total_equity REAL DEFAULT 10000.0",
+                "ALTER TABLE paper_trades ADD COLUMN context_at_time TEXT",
+                "ALTER TABLE paper_trades ADD COLUMN reasoning TEXT",
+                "ALTER TABLE paper_trades ADD COLUMN kelly_fraction REAL DEFAULT 0.0",
+                "ALTER TABLE paper_trades ADD COLUMN trade_size REAL DEFAULT 0.0",
+                "ALTER TABLE paper_trades ADD COLUMN realized_pnl REAL DEFAULT 0.0",
+                "ALTER TABLE paper_trades ADD COLUMN last_mtm_prob REAL DEFAULT NULL",
+                "ALTER TABLE paper_trades ADD COLUMN market_category TEXT",
+                "ALTER TABLE lessons_learned ADD COLUMN market_category TEXT",
+                "ALTER TABLE lessons_learned ADD COLUMN is_consolidated INTEGER DEFAULT 0",
+            ]
+            for sql in migrations:
+                try:
+                    cursor.execute(sql)
+                except sqlite3.OperationalError:
+                    pass
 
     def get_open_market_ids(self):
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT market_id FROM paper_trades WHERE status = 'OPEN'")
-            rows = cursor.fetchall()
-            conn.close()
-            return [str(row[0]) for row in rows]
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT market_id FROM paper_trades WHERE status = 'OPEN'")
+                rows = cursor.fetchall()
+                return [str(row[0]) for row in rows]
         except Exception as e:
             logging.error(f"Error fetching open markets: {e}")
             return []
@@ -127,12 +123,11 @@ class PaperTracker:
     def get_open_position_summary(self):
         """Returns dict of {question: info} for all OPEN trades"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT question, action, trade_size, predicted_prob FROM paper_trades WHERE status = 'OPEN'")
-            rows = cursor.fetchall()
-            conn.close()
-            return {r[0]: {'action': r[1], 'trade_size': r[2], 'predicted_prob': r[3]} for r in rows}
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT question, action, trade_size, predicted_prob FROM paper_trades WHERE status = 'OPEN'")
+                rows = cursor.fetchall()
+                return {r[0]: {'action': r[1], 'trade_size': r[2], 'predicted_prob': r[3]} for r in rows}
         except Exception as e:
             logging.error(f"Error fetching open positions: {e}")
             return {}
@@ -167,25 +162,22 @@ class PaperTracker:
     def record_resolution(self, trade_id, resolved_outcome):
         """Record a resolved trade into calibration_data for Brier score tracking."""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT market_id, question, predicted_prob, market_price, market_category FROM paper_trades WHERE id = ?",
-                (trade_id,)
-            )
-            row = cursor.fetchone()
-            if not row:
-                conn.close()
-                return
-            market_id, question, predicted_prob, market_price, category = row
-            brier_contribution = (predicted_prob - resolved_outcome) ** 2
-            cursor.execute('''
-                INSERT INTO calibration_data (timestamp, market_id, question, predicted_prob, market_price, resolved_outcome, brier_contribution, category)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (datetime.now().isoformat(), market_id, question, predicted_prob, market_price, resolved_outcome, brier_contribution, category))
-            conn.commit()
-            conn.close()
-            logging.info(f"Calibration recorded: Brier={brier_contribution:.4f} (pred={predicted_prob:.2f}, actual={resolved_outcome})")
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT market_id, question, predicted_prob, market_price, market_category FROM paper_trades WHERE id = ?",
+                    (trade_id,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return
+                market_id, question, predicted_prob, market_price, category = row
+                brier_contribution = (predicted_prob - resolved_outcome) ** 2
+                cursor.execute('''
+                    INSERT INTO calibration_data (timestamp, market_id, question, predicted_prob, market_price, resolved_outcome, brier_contribution, category)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (datetime.now().isoformat(), market_id, question, predicted_prob, market_price, resolved_outcome, brier_contribution, category))
+                logging.info(f"Calibration recorded: Brier={brier_contribution:.4f} (pred={predicted_prob:.2f}, actual={resolved_outcome})")
         except Exception as e:
             logging.error(f"Error recording calibration data: {e}")
 
@@ -194,20 +186,19 @@ class PaperTracker:
         default = {"brier_score": 0.25, "win_rate": 0.5, "mean_pred": 0.5, "mean_actual": 0.5,
                    "bias_direction": "UNKNOWN", "bias_amount": 0.0, "sample_size": 0}
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            if category:
-                cursor.execute(
-                    "SELECT predicted_prob, resolved_outcome, brier_contribution FROM calibration_data WHERE category = ? ORDER BY id DESC LIMIT ?",
-                    (category, lookback_n)
-                )
-            else:
-                cursor.execute(
-                    "SELECT predicted_prob, resolved_outcome, brier_contribution FROM calibration_data ORDER BY id DESC LIMIT ?",
-                    (lookback_n,)
-                )
-            rows = cursor.fetchall()
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                if category:
+                    cursor.execute(
+                        "SELECT predicted_prob, resolved_outcome, brier_contribution FROM calibration_data WHERE category = ? ORDER BY id DESC LIMIT ?",
+                        (category, lookback_n)
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT predicted_prob, resolved_outcome, brier_contribution FROM calibration_data ORDER BY id DESC LIMIT ?",
+                        (lookback_n,)
+                    )
+                rows = cursor.fetchall()
 
             if not rows or len(rows) < 5:
                 default["sample_size"] = len(rows)
@@ -265,12 +256,11 @@ class PaperTracker:
     def get_unconsolidated_lesson_count(self):
         """Returns number of lessons not yet incorporated into master_rulebook."""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM lessons_learned WHERE is_consolidated = 0")
-            count = cursor.fetchone()[0]
-            conn.close()
-            return count
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM lessons_learned WHERE is_consolidated = 0")
+                count = cursor.fetchone()[0]
+                return count
         except Exception as e:
             logging.error(f"Error counting unconsolidated lessons: {e}")
             return 0
@@ -278,11 +268,9 @@ class PaperTracker:
     def mark_lessons_consolidated(self):
         """Mark all current lessons as consolidated into the rulebook."""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("UPDATE lessons_learned SET is_consolidated = 1 WHERE is_consolidated = 0")
-            conn.commit()
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE lessons_learned SET is_consolidated = 1 WHERE is_consolidated = 0")
         except Exception as e:
             logging.error(f"Error marking lessons consolidated: {e}")
 
@@ -340,27 +328,24 @@ class PaperTracker:
             logging.error(f"Failed to evaluate market EV: {e}")
 
     def _log_trade(self, market_id, question, predicted_prob, market_price, action, ev, context, reasoning, category, kelly_fraction):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
 
-        cursor.execute("SELECT balance, total_equity FROM portfolio ORDER BY id DESC LIMIT 1")
-        row = cursor.fetchone()
-        current_balance = float(row[0]) if row else 10000.0
-        current_equity = float(row[1]) if row else 10000.0
+            cursor.execute("SELECT balance, total_equity FROM portfolio ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            current_balance = float(row[0]) if row else 10000.0
+            current_equity = float(row[1]) if row else 10000.0
 
-        trade_size = current_balance * kelly_fraction
-        new_balance = current_balance - trade_size
+            trade_size = current_balance * kelly_fraction
+            new_balance = current_balance - trade_size
 
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("INSERT INTO portfolio (timestamp, balance, total_equity) VALUES (?, ?, ?)", (timestamp, new_balance, current_equity))
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("INSERT INTO portfolio (timestamp, balance, total_equity) VALUES (?, ?, ?)", (timestamp, new_balance, current_equity))
 
-        cursor.execute('''
-            INSERT INTO paper_trades (timestamp, market_id, question, predicted_prob, market_price, action, ev, status, context_at_time, reasoning, kelly_fraction, trade_size, market_category)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (timestamp, str(market_id), question, predicted_prob, market_price, action, ev, "OPEN", context, reasoning, kelly_fraction, trade_size, category))
-
-        conn.commit()
-        conn.close()
+            cursor.execute('''
+                INSERT INTO paper_trades (timestamp, market_id, question, predicted_prob, market_price, action, ev, status, context_at_time, reasoning, kelly_fraction, trade_size, market_category)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (timestamp, str(market_id), question, predicted_prob, market_price, action, ev, "OPEN", context, reasoning, kelly_fraction, trade_size, category))
 
         alert_msg = (
             f"🎯 <b>Polymarket 機會 (Bankroll V4)</b>\n\n"
@@ -377,18 +362,17 @@ class PaperTracker:
         send_telegram_alert(alert_msg)
 
     def show_stats(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM paper_trades")
-        count = cursor.fetchone()[0]
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM paper_trades")
+            count = cursor.fetchone()[0]
 
-        cursor.execute("SELECT balance FROM portfolio ORDER BY id DESC LIMIT 1")
-        row = cursor.fetchone()
-        balance = row[0] if row else 10000.0
+            cursor.execute("SELECT balance FROM portfolio ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            balance = row[0] if row else 10000.0
 
-        logging.info(f"Total simulated trades logged: {count}")
-        logging.info(f"Current Virtual Bankroll: ${balance:.2f}")
-        conn.close()
+            logging.info(f"Total simulated trades logged: {count}")
+            logging.info(f"Current Virtual Bankroll: ${balance:.2f}")
 
 if __name__ == "__main__":
     tracker = PaperTracker()
