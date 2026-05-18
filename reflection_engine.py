@@ -105,6 +105,7 @@ def run_reflection_cycle():
             
             from datetime import datetime
             cursor.execute("INSERT INTO portfolio (timestamp, balance, total_equity) VALUES (?, ?, ?)", (datetime.now().isoformat(), new_balance, new_equity))
+            conn.commit() # Release lock so PaperTracker can write
             
             # 判斷是否預測正確
             actual_yes = 1 if winner.lower() == 'yes' else 0
