@@ -31,6 +31,7 @@ class PaperTracker:
         db_path = db_path or _DB_PATH
         self.db_path = db_path
         self._init_db()
+        self._skill_cache = None  # lazily-built skill report, used by calibrate_probability
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -102,6 +103,7 @@ class PaperTracker:
                 "ALTER TABLE paper_trades ADD COLUMN market_category TEXT",
                 "ALTER TABLE lessons_learned ADD COLUMN market_category TEXT",
                 "ALTER TABLE lessons_learned ADD COLUMN is_consolidated INTEGER DEFAULT 0",
+                "ALTER TABLE paper_trades ADD COLUMN raw_prob REAL",
             ]
             for sql in migrations:
                 try:
@@ -229,6 +231,126 @@ class PaperTracker:
             logging.error(f"Error getting calibration stats: {e}")
             return default
 
+    def get_skill_report(self):
+        """Honest skill check: does the agent actually beat zero-effort baselines?
+
+        Compares the agent's Brier score against (a) simply trusting the current
+        market price and (b) always guessing the base rate. A value-betting agent
+        that cannot beat the market price has NEGATIVE alpha -- its disagreements
+        with the market lose money, so it should not be betting against it.
+
+        Computed directly from CLOSED paper_trades (self-consistent, independent
+        of any calibration_data quirks). The YES outcome and YES price are
+        reconstructed from action + realized_pnl. Returns a dict with an
+        'overall' summary and a 'by_category' breakdown.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT predicted_prob, market_price, action, realized_pnl, trade_size, market_category "
+                    "FROM paper_trades WHERE status = 'CLOSED'"
+                )
+                rows = cursor.fetchall()
+        except Exception as e:
+            logging.error(f"Error building skill report: {e}")
+            return {}
+
+        def _agg(records):
+            agent_sq = market_sq = 0.0
+            outcomes = []
+            for prob, mp, action, pnl, size, _cat in records:
+                if None in (prob, mp, pnl, size):
+                    continue
+                is_win = pnl > -size
+                if (action or "").upper() == "BUY YES":
+                    actual = 1 if is_win else 0
+                    yes_price = mp
+                else:  # BUY NO -> stored market_price is the NO price
+                    actual = 0 if is_win else 1
+                    yes_price = 1.0 - mp
+                agent_sq += (prob - actual) ** 2
+                market_sq += (yes_price - actual) ** 2
+                outcomes.append(actual)
+            n = len(outcomes)
+            if n == 0:
+                return None
+            base = sum(outcomes) / n
+            baserate_sq = sum((base - o) ** 2 for o in outcomes)
+            return {
+                "n": n,
+                "agent_brier": agent_sq / n,
+                "market_brier": market_sq / n,
+                "baserate": base,
+                "baserate_brier": baserate_sq / n,
+                "beats_market": (agent_sq / n) < (market_sq / n),
+            }
+
+        report = {"overall": _agg(rows)}
+        by_cat = {}
+        grouped = {}
+        for r in rows:
+            grouped.setdefault(r[5] or "Other", []).append(r)
+        for cat, recs in grouped.items():
+            by_cat[cat] = _agg(recs)
+        report["by_category"] = by_cat
+        return report
+
+    def calibrate_probability(self, raw_prob, market_yes_price, category):
+        """Mechanical calibration layer, applied to the Judge's raw probability
+        BEFORE measuring edge. Shrinks the prediction toward the market price by
+        a weight that grows with how poorly the agent has been calibrated in this
+        category:
+
+          - Where the agent's Brier already beats the market (genuine edge), the
+            prediction is left almost untouched (w=0.10).
+          - Where the agent is systematically worse (e.g. geopolitics longshots),
+            it is pulled hard toward the well-calibrated market price (up to 0.85).
+          - With too little history (cold start), no shrink -- trust the agent
+            until it is proven wrong.
+
+        This fixes overconfidence AND starves the spurious 'edges' that have
+        driven losses (a longshot the agent loves but the market prices low gets
+        pulled back to the market, so it no longer clears the edge threshold).
+
+        Returns (calibrated_prob, shrink_weight).
+        """
+        try:
+            raw = float(raw_prob)
+            mkt = float(market_yes_price)
+        except (TypeError, ValueError):
+            return raw_prob, 0.0
+
+        if self._skill_cache is None:
+            self._skill_cache = self.get_skill_report() or {}
+
+        MIN_CAT = 8
+        cat_stats = (self._skill_cache.get("by_category") or {}).get(category)
+        overall = self._skill_cache.get("overall")
+
+        def _weight(stats):
+            if not stats:
+                return None
+            ab, mb = stats["agent_brier"], stats["market_brier"]
+            if ab <= mb:
+                return 0.10  # agent has demonstrated edge here -> barely shrink
+            excess = (ab - mb) / max(mb, 0.05)
+            return max(0.30, min(0.85, 0.30 + excess * 0.35))
+
+        if cat_stats and cat_stats["n"] >= MIN_CAT:
+            w = _weight(cat_stats)
+        elif overall and overall["n"] >= 20:
+            w = _weight(overall)
+        else:
+            w = 0.0  # not enough history yet
+
+        if w is None:
+            w = 0.0
+
+        cal = (1.0 - w) * raw + w * mkt
+        cal = max(0.01, min(0.99, cal))
+        return cal, w
+
     def get_dynamic_params(self):
         """Returns (edge_threshold, kelly_multiplier) based on calibration history.
         Falls back to safe defaults until at least 20 closed trades exist."""
@@ -289,6 +411,15 @@ class PaperTracker:
 
         try:
             market_price = float(prices[yes_idx])
+
+            # --- Mechanical calibration layer: shrink the Judge's raw probability
+            # toward the (better-calibrated) market price before measuring edge. ---
+            raw_prob = predicted_prob
+            predicted_prob, shrink_w = self.calibrate_probability(raw_prob, market_price, category)
+            if shrink_w > 0:
+                logging.info(f"Calibrated prob: raw={raw_prob:.2f} -> {predicted_prob:.2f} "
+                             f"(shrink {shrink_w:.0%} toward market {market_price:.2f}, cat={category})")
+
             ev_yes = predicted_prob - market_price
             ev_no = (1 - predicted_prob) - (1 - market_price)
 
@@ -320,14 +451,14 @@ class PaperTracker:
 
             if action:
                 logging.info(f"*** FOUND EDGE! Action: {action} on [{question}] | EV: {ev:.3f} | ROI: {ev/price_paid*100:.1f}% | Kelly: {fractional_kelly*100:.1f}% (cluster_count={cluster_count}) ***")
-                self._log_trade(market_id, question, predicted_prob, price_paid, action, ev, context, reasoning, category, fractional_kelly)
+                self._log_trade(market_id, question, predicted_prob, price_paid, action, ev, context, reasoning, category, fractional_kelly, raw_prob)
             else:
                 logging.info(f"No sufficient edge/ROI. EV_Yes: {ev_yes:.3f} (ROI: {roi_yes*100:.1f}%), EV_No: {ev_no:.3f} (ROI: {roi_no*100:.1f}%)")
 
         except Exception as e:
             logging.error(f"Failed to evaluate market EV: {e}")
 
-    def _log_trade(self, market_id, question, predicted_prob, market_price, action, ev, context, reasoning, category, kelly_fraction):
+    def _log_trade(self, market_id, question, predicted_prob, market_price, action, ev, context, reasoning, category, kelly_fraction, raw_prob=None):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
 
@@ -343,9 +474,9 @@ class PaperTracker:
             cursor.execute("INSERT INTO portfolio (timestamp, balance, total_equity) VALUES (?, ?, ?)", (timestamp, new_balance, current_equity))
 
             cursor.execute('''
-                INSERT INTO paper_trades (timestamp, market_id, question, predicted_prob, market_price, action, ev, status, context_at_time, reasoning, kelly_fraction, trade_size, market_category)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (timestamp, str(market_id), question, predicted_prob, market_price, action, ev, "OPEN", context, reasoning, kelly_fraction, trade_size, category))
+                INSERT INTO paper_trades (timestamp, market_id, question, predicted_prob, market_price, action, ev, status, context_at_time, reasoning, kelly_fraction, trade_size, market_category, raw_prob)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (timestamp, str(market_id), question, predicted_prob, market_price, action, ev, "OPEN", context, reasoning, kelly_fraction, trade_size, category, raw_prob))
 
         alert_msg = (
             f"🎯 <b>Polymarket 機會 (Bankroll V4)</b>\n\n"
@@ -377,3 +508,23 @@ class PaperTracker:
 if __name__ == "__main__":
     tracker = PaperTracker()
     tracker.show_stats()
+
+    rep = tracker.get_skill_report()
+    ov = rep.get("overall")
+    if ov:
+        print("\n=== SKILL REPORT (agent vs zero-effort baselines) ===")
+        print(f"resolved trades : {ov['n']}")
+        print(f"agent  Brier    : {ov['agent_brier']:.4f}")
+        print(f"market Brier    : {ov['market_brier']:.4f}   <- just trust the market price")
+        print(f"base-rate Brier : {ov['baserate_brier']:.4f}   (always guess {ov['baserate']:.1%} YES)")
+        verdict = "YES (positive alpha)" if ov["beats_market"] else "NO -- worse than the market"
+        print(f"agent beats market? {verdict}")
+        print("\n--- by category (sorted by sample size) ---")
+        items = sorted(rep.get("by_category", {}).items(),
+                       key=lambda kv: -(kv[1]["n"] if kv[1] else 0))
+        for cat, s in items:
+            if not s:
+                continue
+            flag = "OK " if s["beats_market"] else "NEG"
+            print(f"[{flag}] {cat:13s} n={s['n']:2d}  agent={s['agent_brier']:.3f}  "
+                  f"market={s['market_brier']:.3f}  base-rate={s['baserate']:.0%}")

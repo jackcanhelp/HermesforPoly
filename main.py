@@ -8,6 +8,7 @@ from poly_scanner import fetch_active_markets
 from researcher import PolyResearcher
 from agent import HermesAgent
 from tracker import PaperTracker
+from categorizer import classify_market
 
 load_dotenv()
 
@@ -82,7 +83,7 @@ def main():
     category_counts = Counter()
     capped_markets = []
     for m in unique_markets:
-        cat = m.get('category') or 'Unknown'
+        cat = classify_market(m.get('question', ''), m.get('category'))
         if category_counts[cat] < 3:
             capped_markets.append(m)
             category_counts[cat] += 1
@@ -96,7 +97,7 @@ def main():
 
     for idx, row in enumerate(unique_markets[:30]):
         q = row['question']
-        cat = row.get('category') or 'Unknown'
+        cat = classify_market(q, row.get('category'))
 
         print(f"\n{'='*50}\n[Event {idx+1}] {q}")
 
